@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🍽️ Mise en Place — Automated Weekly Meal Planner
 
 Picks 5 make-ahead lunches + 3 dinners every Saturday, texts both of you a link, 
@@ -120,3 +121,7 @@ mise-en-place/
 ├── requirements.txt
 └── .env.example
 ```
+=======
+# mise-en-place
+Agentic application for recipe planning. Perfect for couples and people who love to cook! 
+>>>>>>> d3fad61b3e383447417ff4a2cb59aa3a1c3e6348
