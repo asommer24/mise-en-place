@@ -1,0 +1,78 @@
+Here you go:
+
+Privacy Policy — Mise en Place
+Effective Date: March 14, 2026
+Version: 1.0
+
+1. Introduction
+Mise en Place ("the Service", "we", "us", or "our") is a private, household meal planning application operated for personal use. This Privacy Policy explains how we collect, use, store, and protect personal information — specifically mobile phone numbers — in connection with our use of the Twilio communications platform.
+This policy is published to satisfy the requirements of Twilio's Messaging Policy and applicable telecommunications regulations, including the Telephone Consumer Protection Act (TCPA) and CTIA guidelines.
+
+2. Who We Are
+The Service is a private household tool used by two named individuals. It is not a commercial product, not offered to the public, and not operated by a registered business entity. All SMS communications are sent exclusively between the Service and the two authorized users listed in the system configuration.
+
+3. Information We Collect
+3.1 Phone Numbers
+We collect and store the mobile phone numbers of the two authorized users of the Service. Phone numbers are:
+
+Provided directly by the account owner at the time of setup
+Entered via the frontend application at the Service URL, or configured directly in the system settings
+Stored as environment variables in a private, access-controlled system (GitHub Secrets and Railway)
+Never collected from any third party or data broker
+
+3.2 Message Content
+The Service sends and receives SMS messages via Twilio. Inbound messages (such as recipe links or commands) are processed and stored in a private Supabase database solely to operate the Service. Message content is never shared with third parties.
+3.3 Usage Data
+We log pipeline run metadata (e.g., number of recipes processed, timestamps) for debugging purposes. No behavioral tracking, analytics, or advertising identifiers are collected.
+
+4. How We Use Your Information
+Phone numbers collected by the Service are used exclusively for:
+
+Sending weekly meal plan suggestions every Saturday morning
+Sending grocery list confirmation messages every Sunday morning
+Receiving inbound recipe submissions sent by authorized users
+Sending operational alerts (e.g., pipeline failure notifications)
+
+We do NOT use phone numbers for any of the following:
+
+Marketing, advertising, or promotional communications of any kind
+Sale, rental, lease, or transfer to any third party
+Cross-referencing with advertising platforms or data brokers
+Any purpose other than operating the Mise en Place meal planning Service
+
+
+5. Legal Basis and Consent
+All authorized users of the Service have provided explicit prior consent to receive SMS messages as a condition of being added to the system. Consent is documented at the point of phone number submission via the Service frontend. Users may withdraw consent at any time by replying STOP to any message, which will immediately halt all outbound communications to that number.
+Message frequency is predictable and limited: a maximum of two (2) outbound messages per week per user under normal operation, plus occasional one-time alerts. Standard message and data rates may apply.
+
+6. How to Add or Remove a Phone Number
+6.1 Adding a Number
+Authorized phone numbers are added through one of two methods:
+
+Via the Service frontend: Navigate to the Settings section of the web application. Enter your mobile number in E.164 format (e.g., +13035551234). Check the consent checkbox confirming you agree to receive SMS messages from the Service. Click Save.
+Via system configuration: The account owner may add numbers directly to the environment configuration (PHONE_NUMBER_1 / PHONE_NUMBER_2). This method is reserved for the account owner and requires direct system access.
+
+6.2 Removing a Number
+To stop receiving messages, you may:
+
+Reply STOP to any SMS message from the Service — this immediately opts you out via Twilio's opt-out management
+Ask the account owner to remove your number from the system configuration
+
+Upon removal, your number will be deleted from all system configurations and no further messages will be sent.
+
+7. Data Storage and Security
+Phone numbers are stored as encrypted environment variables within GitHub Secrets and the Railway deployment platform. They are not stored in any application database, log file, or version-controlled file. Access is restricted to the account owner.
+Message logs and recipe submission data are stored in a private Supabase PostgreSQL database with row-level security enabled. The database is not publicly accessible.
+We use Twilio as our SMS delivery provider. Twilio's own privacy practices are governed by their Privacy Policy, available at twilio.com/legal/privacy.
+
+8. Data Retention
+Phone numbers are retained for as long as the Service is in operation and the user wishes to receive messages. Message content stored in the database is retained indefinitely for recipe queue management purposes. Pipeline run logs are retained for 90 days and then deleted automatically.
+Upon request, we will delete all personal data associated with a phone number within 30 days.
+
+9. Contact
+This Service is privately operated. For any privacy-related questions, requests to access or delete your data, or to report a concern, please contact the account owner directly. As a private household service, there is no public-facing support channel.
+
+10. Changes to This Policy
+We may update this Privacy Policy from time to time. The effective date at the top of this document will reflect the most recent revision. Continued use of the Service after any changes constitutes acceptance of the updated policy.
+
+Mise en Place · Privacy Policy · Stored at /PRIVACY_POLICY.md in the project repository
