@@ -1,0 +1,211 @@
+# .github/workflows/meal-planner.yml
+# =============================================================================
+# Mise en Place — Automated Meal Planner
+#
+# Three scheduled jobs:
+#   1. saturday-suggest  — Saturday 9:00 AM MT → picks recipes, sends SMS
+#   2. sunday-shopping   — Sunday  1:00 AM MT → builds shopping list
+#   3. sms-inbound runs as a persistent FastAPI service (Railway/Vercel),
+#      NOT as a GitHub Action. See README for deployment.
+#
+# Required GitHub Secrets:
+#   ANTHROPIC_API_KEY
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_KEY
+#   TWILIO_ACCOUNT_SID
+#   TWILIO_AUTH_TOKEN
+#   TWILIO_FROM_NUMBER
+#   PHONE_NUMBER_1
+#   PHONE_NUMBER_2
+#   APP_URL                       (your Vercel frontend URL)
+#
+# Shopping list backend — choose ONE:
+#   Apple Reminders (CalDAV):
+#     CALDAV_URL                  (https://caldav.icloud.com)
+#     CALDAV_USERNAME             (your Apple ID)
+#     CALDAV_PASSWORD             (app-specific password)
+#     REMINDERS_LIST_NAME         (e.g. "Grocery List")
+#   — OR —
+#   Todoist:
+#     SHOPPING_BACKEND=todoist
+#     TODOIST_API_KEY
+#     TODOIST_PROJECT_NAME        (e.g. "Groceries")
+# =============================================================================
+
+name: Mise en Place — Meal Planner
+
+on:
+  schedule:
+    # Saturday 9:00 AM MT = 16:00 UTC (MDT, Apr–Nov)
+    # Adjust to 15:00 UTC in winter (MST = UTC-7)
+    - cron: "0 15 * * 6"   # Saturday suggestion
+
+    # Sunday 1:00 AM MT = 08:00 UTC (MDT)
+    - cron: "0 8 * * 0"    # Sunday shopping list
+
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        required: true
+        type: choice
+        options:
+          - saturday_suggest
+          - sunday_shopping
+      dry_run:
+        description: "Dry run (no SMS, no Reminders, no DB writes)"
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  SHOPPING_BACKEND: "apple"    # change to "todoist" if preferred
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Saturday Recipe Suggestions
+  # ---------------------------------------------------------------------------
+  saturday-suggest:
+    name: Saturday — Suggest Recipes & Send SMS
+    runs-on: ubuntu-latest
+    # Run on Saturday cron OR manual trigger for saturday_suggest
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 15 * * 6') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'saturday_suggest')
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Saturday suggestion agent
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            python -c "
+          import os, sys
+          os.environ.update({
+              'ANTHROPIC_API_KEY': os.environ.get('ANTHROPIC_API_KEY',''),
+              'SUPABASE_URL': os.environ.get('SUPABASE_URL',''),
+              'SUPABASE_SERVICE_KEY': os.environ.get('SUPABASE_SERVICE_KEY',''),
+          })
+          # Dry run: just print what would be selected
+          from agents.saturday_suggest import get_supabase, fetch_recipes, select_recipes_with_claude
+          sb = get_supabase()
+          recipes = fetch_recipes(sb)
+          selection = select_recipes_with_claude(recipes)
+          print('DRY RUN — Selected:', selection)
+          "
+          else
+            python -m agents.saturday_suggest
+          fi
+        env:
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TWILIO_ACCOUNT_SID:   ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN:    ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM_NUMBER:   ${{ secrets.TWILIO_FROM_NUMBER }}
+          PHONE_NUMBER_1:       ${{ secrets.PHONE_NUMBER_1 }}
+          PHONE_NUMBER_2:       ${{ secrets.PHONE_NUMBER_2 }}
+          APP_URL:              ${{ secrets.APP_URL }}
+
+      - name: Alert on failure
+        if: failure() && secrets.TWILIO_FROM_NUMBER != ''
+        run: |
+          python -c "
+          import httpx, os
+          httpx.post(
+              f'https://api.twilio.com/2010-04-01/Accounts/{os.environ[\"TWILIO_ACCOUNT_SID\"]}/Messages.json',
+              auth=(os.environ['TWILIO_ACCOUNT_SID'], os.environ['TWILIO_AUTH_TOKEN']),
+              data={
+                  'From': os.environ['TWILIO_FROM_NUMBER'],
+                  'To':   os.environ['PHONE_NUMBER_1'],
+                  'Body': '⚠️ Mise: Saturday suggestion job failed. Check GitHub Actions.',
+              }
+          )
+          "
+        env:
+          TWILIO_ACCOUNT_SID:  ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN:   ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM_NUMBER:  ${{ secrets.TWILIO_FROM_NUMBER }}
+          PHONE_NUMBER_1:      ${{ secrets.PHONE_NUMBER_1 }}
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Sunday Shopping List
+  # ---------------------------------------------------------------------------
+  sunday-shopping:
+    name: Sunday — Build Shopping List
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 8 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'sunday_shopping')
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          # Install CalDAV or Todoist depending on backend
+          if [ "${{ env.SHOPPING_BACKEND }}" == "todoist" ]; then
+            pip install todoist-api-python
+          else
+            pip install caldav
+          fi
+
+      - name: Run Sunday shopping agent
+        run: python -m agents.sunday_shopping
+        env:
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SHOPPING_BACKEND:     ${{ env.SHOPPING_BACKEND }}
+          # Apple Reminders
+          CALDAV_URL:           ${{ secrets.CALDAV_URL }}
+          CALDAV_USERNAME:      ${{ secrets.CALDAV_USERNAME }}
+          CALDAV_PASSWORD:      ${{ secrets.CALDAV_PASSWORD }}
+          REMINDERS_LIST_NAME:  ${{ secrets.REMINDERS_LIST_NAME }}
+          # Todoist (alternative)
+          TODOIST_API_KEY:      ${{ secrets.TODOIST_API_KEY }}
+          TODOIST_PROJECT_NAME: ${{ secrets.TODOIST_PROJECT_NAME }}
+
+      - name: Send SMS confirmation
+        if: success()
+        run: |
+          python -c "
+          import httpx, os
+          msg = '🛒 Your grocery list for the week is ready in ' + (
+              'Reminders' if os.environ.get('SHOPPING_BACKEND','apple') != 'todoist'
+              else 'Todoist'
+          ) + '! Happy shopping 🥦'
+          for phone in [os.environ['PHONE_NUMBER_1'], os.environ['PHONE_NUMBER_2']]:
+              httpx.post(
+                  f'https://api.twilio.com/2010-04-01/Accounts/{os.environ[\"TWILIO_ACCOUNT_SID\"]}/Messages.json',
+                  auth=(os.environ['TWILIO_ACCOUNT_SID'], os.environ['TWILIO_AUTH_TOKEN']),
+                  data={'From': os.environ['TWILIO_FROM_NUMBER'], 'To': phone, 'Body': msg},
+              )
+          "
+        env:
+          TWILIO_ACCOUNT_SID:  ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN:   ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM_NUMBER:  ${{ secrets.TWILIO_FROM_NUMBER }}
+          PHONE_NUMBER_1:      ${{ secrets.PHONE_NUMBER_1 }}
+          PHONE_NUMBER_2:      ${{ secrets.PHONE_NUMBER_2 }}
+          SHOPPING_BACKEND:    ${{ env.SHOPPING_BACKEND }}

@@ -1,0 +1,12 @@
+# Mise en Place — Python dependencies
+anthropic>=0.40.0
+supabase>=2.10.0
+httpx>=0.27.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9    # for Twilio webhook form parsing
+python-dotenv>=1.0.0
+
+# Shopping backends (install only what you use)
+caldav>=1.3.9              # Apple Reminders via CalDAV
+# todoist-api-python>=2.1.3  # uncomment for Todoist
