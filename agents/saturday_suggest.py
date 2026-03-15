@@ -75,43 +75,32 @@ def fetch_recipes(sb) -> dict:
         .execute()
     ).data or []
 
-    # All dinners
+# All dinners — vegetarian only
     dinners = (
         sb.table("recipes")
         .select("*")
         .eq("meal_type", "dinner")
+        .eq("vegetarian", True)
         .order("times_suggested", desc=False)
         .execute()
     ).data or []
-
-    logger.info("Fetched %d lunches, %d dinners, %d queued",
-                len(lunches), len(dinners), len(queued))
-    return {"lunches": lunches, "dinners": dinners, "queued": queued}
-
 
 # ---------------------------------------------------------------------------
 # Step 2: Claude selects the best 5+3
 # ---------------------------------------------------------------------------
 
 SELECTION_PROMPT = """
-You are a meal planning assistant for a household. Your job is to choose:
+You are a meal planning assistant for a vegetarian household. Your job is to choose:
   - 5 LUNCH recipes: must be make-ahead friendly (can be prepped Sunday, refrigerated, reheated or eaten cold all week)
-  - 3 DINNER recipes: varied, balanced, one can be a weekend project if desired
+  - 3 DINNER recipes: MUST be vegetarian only — no meat, no fish, no poultry of any kind
 
 Selection rules:
 1. Prefer recipes marked in_queue=true (user submitted — they want these soon)
-2. Avoid repeating recipes with high times_suggested values
-3. Ensure variety: don't pick 5 soups, or 3 pastas
-4. Balance nutrition across the week where possible
-
-Return ONLY valid JSON with this exact shape:
-{
-  "lunch_ids": ["uuid1", "uuid2", "uuid3", "uuid4", "uuid5"],
-  "dinner_ids": ["uuid1", "uuid2", "uuid3"],
-  "reasoning": "2-sentence explanation of your picks"
-}
-
-No markdown, no preamble.
+2. For dinners, ONLY select recipes where vegetarian=true — this is a strict requirement
+3. Avoid repeating recipes with high times_suggested values
+4. Ensure variety: don't pick 3 pasta dishes or 3 soups
+5. Balance nutrition across the week where possible
+6. Aim for varied cuisines across the 3 dinners (e.g. Italian, Mexican, Asian)
 """
 
 

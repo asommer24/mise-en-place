@@ -68,6 +68,13 @@ function RecipeCard({ recipe, onSwap, compact = false }) {
         <div style={{ position:"absolute", top: recipe.in_queue ? 32 : 10, right:10,
           fontSize:"10px", color:"#c8a87a" }}>📸 IG</div>
       )}
+	{recipe.vegetarian && (
+          <div style={{ position:"absolute", top: recipe.in_queue ? 52 : 30, right:10,
+            fontSize:"10px", color:"#7ac87a",
+            background:"rgba(122,200,122,0.1)",
+            border:"1px solid rgba(122,200,122,0.2)",
+            padding:"2px 6px", borderRadius:"20px" }}>🌿 veg</div>
+        )}
       <div style={{ fontFamily:"'Playfair Display', Georgia, serif",
         fontSize: compact ? "14px" : "16px", fontWeight:"700",
         color:"#f5ede0", marginBottom:"5px", paddingRight:"40px" }}>
