@@ -119,7 +119,7 @@ jobs:
           APP_URL:              ${{ secrets.APP_URL }}
 
       - name: Alert on failure
-        if: failure() && secrets.TWILIO_FROM_NUMBER != ''
+        if: failure()
         run: |
           python -c "
           import httpx, os
