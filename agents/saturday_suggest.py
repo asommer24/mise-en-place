@@ -75,7 +75,7 @@ def fetch_recipes(sb) -> dict:
         .execute()
     ).data or []
 
-# All dinners — vegetarian only
+    # All dinners — vegetarian only
     dinners = (
         sb.table("recipes")
         .select("*")
@@ -84,6 +84,9 @@ def fetch_recipes(sb) -> dict:
         .order("times_suggested", desc=False)
         .execute()
     ).data or []
+
+    return {"lunches": lunches, "dinners": dinners, "queued": queued}
+
 
 # ---------------------------------------------------------------------------
 # Step 2: Claude selects the best 5+3
