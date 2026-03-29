@@ -85,6 +85,8 @@ def fetch_recipes(sb) -> dict:
         .execute()
     ).data or []
 
+    logger.info("fetch_recipes returning: lunches=%d dinners=%d queued=%d",
+                len(lunches), len(dinners), len(queued))
     return {"lunches": lunches, "dinners": dinners, "queued": queued}
 
 
@@ -222,6 +224,8 @@ def send_sms(to: str, body: str) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    logger.info("Loading from: %s", __file__)
+    logger.info("fetch_recipes fix present: %s", 'return {"lunches"' in open(__file__).read())
     sb = get_supabase()
     week_start = next_monday()
     app_url = os.environ["APP_URL"]
