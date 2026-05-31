@@ -1,51 +1,26 @@
-import { useState, useEffect } from "react";
-
-// ─── Mock data (replace with Supabase client calls) ───────────────────────
-
-const MOCK_LUNCHES = [
-  { id: "1", name: "Greek Chicken Meal Prep Bowls", description: "Lemony marinated chicken thighs over rice with cucumber, tomato, and tzatziki.", tags: ["make-ahead","high-protein"], prep_time_mins: 20, cook_time_mins: 30, servings: 5, meal_type: "lunch", source_url: null },
-  { id: "2", name: "Spicy Sesame Noodles", description: "Cold sesame noodles with chili crisp, edamame, and shredded rotisserie chicken.", tags: ["cold","quick","asian"], prep_time_mins: 15, cook_time_mins: 10, servings: 5, meal_type: "lunch", source_url: null },
-  { id: "3", name: "White Bean & Kale Soup", description: "Hearty Tuscan-style soup that thickens beautifully overnight.", tags: ["vegetarian","healthy"], prep_time_mins: 15, cook_time_mins: 35, servings: 6, meal_type: "lunch", source_url: null },
-  { id: "4", name: "Chipotle-Style Burrito Bowls", description: "Rice, black beans, grilled chicken, corn salsa, and sour cream.", tags: ["make-ahead","high-protein"], prep_time_mins: 20, cook_time_mins: 25, servings: 5, meal_type: "lunch", source_url: null },
-  { id: "5", name: "Roasted Veggie & Farro Salad", description: "Warm or cold farro with roasted beets, goat cheese, and lemon tahini.", tags: ["vegetarian","make-ahead"], prep_time_mins: 15, cook_time_mins: 40, servings: 5, meal_type: "lunch", source_url: null },
-];
-
-const MOCK_DINNERS = [
-  { id: "6", name: "Smash Burgers", description: "Crispy-edged beef patties with American cheese, pickles, and special sauce.", tags: ["quick","crowd-pleaser"], prep_time_mins: 10, cook_time_mins: 15, servings: 4, meal_type: "dinner", source_url: null },
-  { id: "7", name: "Sheet Pan Salmon", description: "Salmon fillets with asparagus and cherry tomatoes, lemon-dill butter.", tags: ["healthy","one-pan"], prep_time_mins: 10, cook_time_mins: 25, servings: 4, meal_type: "dinner", source_url: null },
-  { id: "8", name: "Birria Tacos", description: "Slow-braised beef birria with consommé for dipping. Weekend showstopper.", tags: ["weekend","slow-cook"], prep_time_mins: 30, cook_time_mins: 240, servings: 6, meal_type: "dinner", source_url: null },
-];
-
-const MOCK_ALL_RECIPES = [
-  ...MOCK_LUNCHES, ...MOCK_DINNERS,
-  { id: "9", name: "One-Pot Pasta e Fagioli", description: "Italian bean and pasta soup.", tags: ["vegetarian","quick"], prep_time_mins: 10, cook_time_mins: 25, servings: 4, meal_type: "dinner", source_url: null },
-  { id: "10", name: "Korean BBQ Chicken Rice Bowls", description: "Gochujang-marinated chicken over steamed rice with pickled veggies.", tags: ["make-ahead","asian"], prep_time_mins: 20, cook_time_mins: 20, servings: 5, meal_type: "lunch", source_url: null, in_queue: true },
-  { id: "11", name: "Creamy Tuscan White Bean Pasta", description: "Silky pasta with white beans, sun-dried tomatoes, and spinach.", tags: ["vegetarian","quick"], prep_time_mins: 10, cook_time_mins: 20, servings: 4, meal_type: "dinner", source_url: "https://instagram.com/p/example", in_queue: true },
-];
-
-const SHOPPING_LIST = [
-  { name: "chicken thighs", amount: "3 lbs", category: "protein", checked: false, for_recipes: ["Greek Chicken Bowls"] },
-  { name: "salmon fillets", amount: "4 × 6oz", category: "protein", checked: false, for_recipes: ["Sheet Pan Salmon"] },
-  { name: "80/20 ground beef", amount: "1.5 lbs", category: "protein", checked: true, for_recipes: ["Smash Burgers"] },
-  { name: "jasmine rice", amount: "2 cups", category: "grain", checked: false, for_recipes: ["Greek Chicken Bowls"] },
-  { name: "soba noodles", amount: "12 oz", category: "grain", checked: false, for_recipes: ["Sesame Noodles"] },
-  { name: "cherry tomatoes", amount: "2 pints", category: "produce", checked: false, for_recipes: ["Greek Chicken Bowls","Sheet Pan Salmon"] },
-  { name: "cucumber", amount: "1 large", category: "produce", checked: true, for_recipes: ["Greek Chicken Bowls"] },
-  { name: "asparagus", amount: "1 bunch", category: "produce", checked: false, for_recipes: ["Sheet Pan Salmon"] },
-  { name: "kale", amount: "1 bunch", category: "produce", checked: false, for_recipes: ["White Bean Soup"] },
-  { name: "lemon", amount: "5", category: "produce", checked: false, for_recipes: ["Greek Chicken Bowls","Sheet Pan Salmon"] },
-  { name: "tzatziki", amount: "1 cup", category: "dairy", checked: false, for_recipes: ["Greek Chicken Bowls"] },
-  { name: "butter", amount: "4 tbsp", category: "dairy", checked: true, for_recipes: ["Sheet Pan Salmon"] },
-  { name: "brioche buns", amount: "4", category: "bakery", checked: false, for_recipes: ["Smash Burgers"] },
-  { name: "chili crisp", amount: "1 jar", category: "pantry", checked: false, for_recipes: ["Sesame Noodles"] },
-  { name: "sesame oil", amount: "1 bottle", category: "pantry", checked: true, for_recipes: ["Sesame Noodles"] },
-  { name: "cannellini beans", amount: "2 cans", category: "pantry", checked: false, for_recipes: ["White Bean Soup"] },
-];
+import { useState, useEffect, useMemo } from "react";
+import { supabase } from "./supabase";
 
 const CATEGORY_ORDER = ["produce","protein","dairy","grain","bakery","pantry","condiment","frozen","other"];
 const CATEGORY_EMOJI = { produce:"🥬", protein:"🥩", dairy:"🧀", grain:"🌾", bakery:"🍞", pantry:"🫙", condiment:"🧴", frozen:"🧊", other:"📦" };
 
+// week_start is a plain DATE string ("2026-06-01"); append a local midnight so it
+// formats in the user's timezone instead of being parsed as UTC (off-by-one risk).
+function formatWeek(weekStart, opts) {
+  if (!weekStart) return "";
+  return new Date(`${weekStart}T00:00:00`).toLocaleDateString("en-US", opts);
+}
+
 // ─── Components ────────────────────────────────────────────────────────────
+
+function EmptyState({ children }) {
+  return (
+    <div style={{ textAlign:"center", padding:"60px 20px",
+      color:"#5a4030", fontSize:"14px", lineHeight:"1.6" }}>
+      {children}
+    </div>
+  );
+}
 
 function RecipeCard({ recipe, onSwap, compact = false }) {
   const totalMins = (recipe.prep_time_mins || 0) + (recipe.cook_time_mins || 0);
@@ -68,7 +43,7 @@ function RecipeCard({ recipe, onSwap, compact = false }) {
         <div style={{ position:"absolute", top: recipe.in_queue ? 32 : 10, right:10,
           fontSize:"10px", color:"#c8a87a" }}>📸 IG</div>
       )}
-	{recipe.vegetarian && (
+	{(recipe.tags || []).includes("vegetarian") && (
           <div style={{ position:"absolute", top: recipe.in_queue ? 52 : 30, right:10,
             fontSize:"10px", color:"#7ac87a",
             background:"rgba(122,200,122,0.1)",
@@ -112,7 +87,7 @@ function RecipeCard({ recipe, onSwap, compact = false }) {
   );
 }
 
-function ShoppingTab({ items, setItems }) {
+function ShoppingTab({ items, setItems, planId, weekLabel }) {
   const byCategory = {};
   for (const item of items) {
     const cat = item.category || "other";
@@ -121,10 +96,23 @@ function ShoppingTab({ items, setItems }) {
   }
   const total = items.length;
   const done  = items.filter(i => i.checked).length;
+  const pct   = total ? Math.round((done / total) * 100) : 0;
 
-  const toggle = (name) => {
-    setItems(prev => prev.map(i => i.name === name ? {...i, checked: !i.checked} : i));
+  const toggle = async (name) => {
+    const next = items.map(i => i.name === name ? {...i, checked: !i.checked} : i);
+    setItems(next);   // optimistic
+    if (planId) {
+      await supabase.from("weekly_plans").update({ shopping_list: next }).eq("id", planId);
+    }
   };
+
+  if (!total) {
+    return (
+      <EmptyState>
+        No shopping list yet — it's generated Sunday morning once the plan is set.
+      </EmptyState>
+    );
+  }
 
   return (
     <div>
@@ -136,15 +124,15 @@ function ShoppingTab({ items, setItems }) {
             Shopping List
           </h2>
           <div style={{ fontSize:"12px", color:"#806040" }}>
-            {done}/{total} items checked · Week of Mar 17
+            {done}/{total} items checked{weekLabel ? ` · ${weekLabel}` : ""}
           </div>
         </div>
         <div style={{
           width:"48px", height:"48px", borderRadius:"50%",
-          background:`conic-gradient(#c8a87a ${done/total*360}deg, rgba(200,168,122,0.1) 0deg)`,
+          background:`conic-gradient(#c8a87a ${pct * 3.6}deg, rgba(200,168,122,0.1) 0deg)`,
           display:"flex", alignItems:"center", justifyContent:"center",
           fontSize:"12px", color:"#c8a87a", fontWeight:"700"
-        }}>{Math.round(done/total*100)}%</div>
+        }}>{pct}%</div>
       </div>
 
       {CATEGORY_ORDER.map(cat => {
@@ -183,7 +171,7 @@ function ShoppingTab({ items, setItems }) {
                       {item.name}
                     </span>
                     <span style={{ fontSize:"12px", color:"#806040", marginLeft:"10px" }}>
-                      {item.amount}
+                      {item.amount}{item.unit ? ` ${item.unit}` : ""}
                     </span>
                   </div>
                   <div style={{ fontSize:"10px", color:"#5a4030" }}>
@@ -271,27 +259,56 @@ function SwapModal({ recipe, allRecipes, onConfirm, onClose }) {
 
 export default function MiseEnPlace() {
   const [tab, setTab] = useState("week");
-  const [lunches, setLunches] = useState(MOCK_LUNCHES);
-  const [dinners, setDinners] = useState(MOCK_DINNERS);
-  const [allRecipes] = useState(MOCK_ALL_RECIPES);
-  const [shoppingItems, setShoppingItems] = useState(SHOPPING_LIST);
+  const [plan, setPlan] = useState(null);          // latest weekly_plans row, or null
+  const [allRecipes, setAllRecipes] = useState([]);
+  const [shoppingItems, setShoppingItems] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [swapTarget, setSwapTarget] = useState(null);
   const [saved, setSaved] = useState(false);
   const [queueInput, setQueueInput] = useState("");
   const [queueFeedback, setQueueFeedback] = useState("");
 
-  const handleSwap = (original, replacement) => {
-    if (original.meal_type === "lunch") {
-      setLunches(prev => prev.map(r => r.id === original.id ? replacement : r));
-    } else {
-      setDinners(prev => prev.map(r => r.id === original.id ? replacement : r));
-    }
+  // Resolve the plan's lunch/dinner IDs to full recipes, preserving array order
+  // (json_agg in the SQL view doesn't guarantee order, so we resolve client-side).
+  const recipesById = useMemo(
+    () => Object.fromEntries(allRecipes.map(r => [r.id, r])), [allRecipes]
+  );
+  const lunches = (plan?.lunches || []).map(id => recipesById[id]).filter(Boolean);
+  const dinners = (plan?.dinners || []).map(id => recipesById[id]).filter(Boolean);
+
+  useEffect(() => {
+    (async () => {
+      // Show the most recent plan: this week's Mon–Fri, then next week's as soon
+      // as Saturday's cron creates it. Avoids brittle client-side week math.
+      const [{ data: recipes }, { data: plans }] = await Promise.all([
+        supabase.from("recipes").select("*"),
+        supabase.from("weekly_plans").select("*")
+          .order("week_start", { ascending: false }).limit(1),
+      ]);
+      setAllRecipes(recipes || []);
+      const p = plans?.[0] || null;
+      setPlan(p);
+      setShoppingItems(p?.shopping_list || []);
+      setLoading(false);
+    })();
+  }, []);
+
+  const handleSwap = async (original, replacement) => {
+    if (!plan) return;
+    const field = original.meal_type === "lunch" ? "lunches" : "dinners";
+    const nextIds = (plan[field] || []).map(id => id === original.id ? replacement.id : id);
+    setPlan(p => ({ ...p, [field]: nextIds }));   // optimistic
     setSwapTarget(null);
+    await supabase.from("weekly_plans").update({ [field]: nextIds }).eq("id", plan.id);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (!plan) return;
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
+    await supabase.from("weekly_plans")
+      .update({ status: "confirmed", confirmed_at: new Date().toISOString() })
+      .eq("id", plan.id);
   };
 
   const handleQueueSubmit = async () => {
@@ -325,7 +342,10 @@ export default function MiseEnPlace() {
   };
 
   const queued = allRecipes.filter(r => r.in_queue);
-  const weekOf = "March 17, 2026";
+  const weekOf = formatWeek(plan?.week_start, { month: "long", day: "numeric", year: "numeric" });
+  const weekLabel = plan?.week_start
+    ? `Week of ${formatWeek(plan.week_start, { month: "short", day: "numeric" })}`
+    : "";
 
   return (
     <>
@@ -363,7 +383,7 @@ export default function MiseEnPlace() {
                 <h1 style={{ fontFamily:"'Playfair Display',Georgia,serif",
                   fontSize:"32px", fontWeight:"700", color:"#f5ede0",
                   lineHeight:"1.1" }}>
-                  Week of {weekOf}
+                  {loading ? "Loading…" : weekOf ? `Week of ${weekOf}` : "No plan yet"}
                 </h1>
               </div>
               <div style={{ textAlign:"right" }}>
@@ -397,6 +417,14 @@ export default function MiseEnPlace() {
 
           {/* ── THIS WEEK TAB ── */}
           {tab === "week" && (
+            loading ? (
+              <EmptyState>Loading this week's plan…</EmptyState>
+            ) : !plan ? (
+              <EmptyState>
+                No plan yet. Saturday's cron picks 5 lunches + 3 dinners — check
+                back then, or add recipes in the Queue tab.
+              </EmptyState>
+            ) : (
             <div>
               <div style={{ marginBottom:"28px" }}>
                 <div style={{ display:"flex", justifyContent:"space-between",
@@ -448,15 +476,30 @@ export default function MiseEnPlace() {
                 </button>
               </div>
             </div>
+            )
           )}
 
           {/* ── SHOPPING TAB ── */}
           {tab === "shopping" && (
-            <ShoppingTab items={shoppingItems} setItems={setShoppingItems} />
+            loading ? (
+              <EmptyState>Loading…</EmptyState>
+            ) : !plan ? (
+              <EmptyState>No plan yet — the shopping list appears once a plan is set.</EmptyState>
+            ) : (
+              <ShoppingTab
+                items={shoppingItems}
+                setItems={setShoppingItems}
+                planId={plan.id}
+                weekLabel={weekLabel}
+              />
+            )
           )}
 
           {/* ── LIBRARY TAB ── */}
           {tab === "library" && (
+            loading ? (
+              <EmptyState>Loading recipes…</EmptyState>
+            ) : (
             <div>
               <h2 style={{ fontFamily:"'Playfair Display',Georgia,serif",
                 fontSize:"22px", color:"#f5ede0", marginBottom:"6px" }}>
@@ -482,6 +525,7 @@ export default function MiseEnPlace() {
                 </div>
               ))}
             </div>
+            )
           )}
 
           {/* ── QUEUE TAB ── */}
@@ -533,7 +577,12 @@ export default function MiseEnPlace() {
                 )}
               </div>
 
-              {queued.length === 0 ? (
+              {loading ? (
+                <div style={{ textAlign:"center", padding:"40px",
+                  color:"#5a4030", fontSize:"14px" }}>
+                  Loading…
+                </div>
+              ) : queued.length === 0 ? (
                 <div style={{ textAlign:"center", padding:"40px",
                   color:"#5a4030", fontSize:"14px" }}>
                   Queue is empty — text a link or recipe name to add one!

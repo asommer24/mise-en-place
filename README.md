@@ -74,10 +74,19 @@ backend secrets (CalDAV or Todoist). See `.env.example`.
 ```bash
 cd frontend
 npm install
-# Set env vars: VITE_INGEST_URL (your Railway URL) and VITE_INGEST_TOKEN
-# (same value as INGEST_TOKEN)
+# Set env vars:
+#   VITE_INGEST_URL        your Railway URL
+#   VITE_INGEST_TOKEN      same value as INGEST_TOKEN
+#   VITE_SUPABASE_URL      Supabase Project URL
+#   VITE_SUPABASE_ANON_KEY Supabase ANON / publishable key (NOT service_role)
 vercel deploy
 ```
+
+The web app reads the plan, recipe library, queue, and shopping list straight
+from Supabase with the anon key, and writes swaps / confirmations / checked-off
+groceries back to the current week's plan. RLS (`scripts/schema.sql`) keeps the
+anon key scoped to those operations — re-run `schema.sql` if you set this up
+before the policy was added.
 
 ---
 

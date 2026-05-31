@@ -69,12 +69,13 @@ def fetch_recipes(sb) -> dict:
         .execute()
     ).data or []
 
-    # All dinners — vegetarian only
+    # All dinners — vegetarian only. "vegetarian" is a value in the tags[]
+    # array (there is no vegetarian column), so filter with contains().
     dinners = (
         sb.table("recipes")
         .select("*")
         .eq("meal_type", "dinner")
-        .eq("vegetarian", True)
+        .contains("tags", ["vegetarian"])
         .order("times_suggested", desc=False)
         .execute()
     ).data or []

@@ -64,7 +64,17 @@ CREATE INDEX IF NOT EXISTS weekly_plans_week_start_idx ON weekly_plans (week_sta
 
 ALTER TABLE weekly_plans ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Public read plans"          ON weekly_plans FOR SELECT USING (true);
-CREATE POLICY "Public update plans"        ON weekly_plans FOR UPDATE USING (true);
+-- The anon key ships in the public web bundle, so anyone who loads the site can
+-- run this UPDATE. Scope it to the current/future week (WITH CHECK blocks moving
+-- a row into the past) so a stranger can't rewrite historical plans. Inserts and
+-- deletes stay service-role-only. This is light hardening, not real auth — for a
+-- private 2-person app the remaining surface (editing this week's plan) is
+-- acceptable and recoverable, since the agents regenerate plans weekly.
+DROP POLICY IF EXISTS "Public update plans" ON weekly_plans;
+CREATE POLICY "Public update current plans" ON weekly_plans
+    FOR UPDATE
+    USING      (week_start >= date_trunc('week', CURRENT_DATE)::date)
+    WITH CHECK (week_start >= date_trunc('week', CURRENT_DATE)::date);
 CREATE POLICY "Service role all plans"     ON weekly_plans FOR ALL USING (auth.role() = 'service_role');
 
 
