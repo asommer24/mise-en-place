@@ -93,7 +93,7 @@ CREATE POLICY "Service role all submissions" ON recipe_submissions FOR ALL USING
 CREATE TABLE IF NOT EXISTS meal_pipeline_runs (
     id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     ran_at      TIMESTAMPTZ DEFAULT NOW(),
-    job         TEXT        NOT NULL,   -- 'saturday_suggest'|'sunday_shopping'|'sms_inbound'
+    job         TEXT        NOT NULL,   -- 'saturday_suggest'|'sunday_shopping'
     status      TEXT        NOT NULL,
     details     JSONB       DEFAULT '{}',
     error       TEXT

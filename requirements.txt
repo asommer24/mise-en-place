@@ -4,7 +4,6 @@ supabase>=2.10.0
 httpx>=0.27.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
-python-multipart>=0.0.9    # for Twilio webhook form parsing
 python-dotenv>=1.0.0
 todoist-api-python>=2.1.3 
 

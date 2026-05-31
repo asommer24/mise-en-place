@@ -294,11 +294,34 @@ export default function MiseEnPlace() {
     setTimeout(() => setSaved(false), 2500);
   };
 
-  const handleQueueSubmit = () => {
-    if (!queueInput.trim()) return;
-    setQueueFeedback(`✅ "${queueInput.slice(0, 40)}" added to queue!`);
-    setQueueInput("");
-    setTimeout(() => setQueueFeedback(""), 3000);
+  const handleQueueSubmit = async () => {
+    const input = queueInput.trim();
+    if (!input) return;
+
+    const isUrl = /^https?:\/\//i.test(input);
+    const payload = isUrl ? { url: input } : { name: input };
+
+    setQueueFeedback("⏳ Adding…");
+    try {
+      const resp = await fetch(`${import.meta.env.VITE_INGEST_URL}/ingest`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Ingest-Token": import.meta.env.VITE_INGEST_TOKEN,
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        setQueueFeedback(`✅ ${data.message || "Added to queue!"}`);
+        setQueueInput("");
+      } else {
+        setQueueFeedback(`⚠️ ${data.detail || "Couldn't add that. Try again."}`);
+      }
+    } catch (err) {
+      setQueueFeedback("⚠️ Network error — is the ingest service running?");
+    }
+    setTimeout(() => setQueueFeedback(""), 4000);
   };
 
   const queued = allRecipes.filter(r => r.in_queue);
@@ -440,8 +463,8 @@ export default function MiseEnPlace() {
                 Recipe Library
               </h2>
               <p style={{ fontSize:"13px", color:"#806040", marginBottom:"20px" }}>
-                All {allRecipes.length} recipes. Send an Instagram link or recipe name 
-                by text to add new ones.
+                All {allRecipes.length} recipes. Paste or share an Instagram link or
+                recipe name in the Queue tab to add new ones.
               </p>
 
               {["lunch","dinner"].map(type => (
@@ -469,8 +492,9 @@ export default function MiseEnPlace() {
                 Recipe Queue
               </h2>
               <p style={{ fontSize:"13px", color:"#806040", marginBottom:"20px" }}>
-                These recipes are prioritised for upcoming weeks. Add by texting an 
-                Instagram link or recipe name to the group number.
+                These recipes are prioritised for upcoming weeks. Add one below by
+                pasting an Instagram link or recipe name — or share a post straight
+                from Instagram with the iOS Shortcut.
               </p>
 
               {/* Add manually */}

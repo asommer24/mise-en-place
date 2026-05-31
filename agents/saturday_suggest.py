@@ -5,18 +5,13 @@ Runs every Saturday morning. Uses Claude to:
   1. Pull recipes from Supabase (prioritising the queue)
   2. Select 5 make-ahead lunches + 3 dinners for the week
   3. Create a weekly_plan row
-  4. Send an SMS to both phone numbers via Twilio with a link to the web app
+
+The plan is then viewed in the web app — no notifications are sent.
 
 Env vars required:
     ANTHROPIC_API_KEY
     SUPABASE_URL
     SUPABASE_SERVICE_KEY
-    TWILIO_ACCOUNT_SID
-    TWILIO_AUTH_TOKEN
-    TWILIO_FROM_NUMBER     (your Twilio number, E.164)
-    PHONE_NUMBER_1         (E.164, e.g. +13035551234)
-    PHONE_NUMBER_2
-    APP_URL                (your Vercel app URL)
 """
 
 import json
@@ -26,7 +21,6 @@ import sys
 from datetime import date, timedelta
 
 import anthropic
-import httpx
 from supabase import create_client
 
 logging.basicConfig(level=logging.INFO,
@@ -178,57 +172,12 @@ def save_weekly_plan(sb, selection: dict, week_start: date) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Build SMS text
-# ---------------------------------------------------------------------------
-
-def build_sms(lunches: list[dict], dinners: list[dict],
-              week_start: date, app_url: str) -> str:
-    mon = week_start.strftime("%b %-d")
-    lunch_names = "\n".join(f"  · {r['name']}" for r in lunches)
-    dinner_names = "\n".join(f"  · {r['name']}" for r in dinners)
-
-    return (
-        f"🍽️ Mise en Place — Week of {mon}\n\n"
-        f"5 MEAL PREP LUNCHES:\n{lunch_names}\n\n"
-        f"3 DINNERS:\n{dinner_names}\n\n"
-        f"👆 Tap to view recipes, override picks, or add to queue:\n"
-        f"{app_url}\n\n"
-        f"Reply with an Instagram link or recipe name to add to next week's queue."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Step 5: Send SMS via Twilio
-# ---------------------------------------------------------------------------
-
-def send_sms(to: str, body: str) -> None:
-    account_sid = os.environ["TWILIO_ACCOUNT_SID"]
-    auth_token  = os.environ["TWILIO_AUTH_TOKEN"]
-    from_number = os.environ["TWILIO_FROM_NUMBER"]
-
-    resp = httpx.post(
-        f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json",
-        auth=(account_sid, auth_token),
-        data={"From": from_number, "To": to, "Body": body},
-        timeout=15,
-    )
-    if resp.status_code == 201:
-        logger.info("SMS sent to %s", to)
-    else:
-        logger.error("SMS failed to %s: %s %s", to, resp.status_code, resp.text)
-        raise RuntimeError(f"Twilio error: {resp.text}")
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    logger.info("Loading from: %s", __file__)
-    logger.info("fetch_recipes fix present: %s", 'return {"lunches"' in open(__file__).read())
     sb = get_supabase()
     week_start = next_monday()
-    app_url = os.environ["APP_URL"]
 
     # 1. Fetch recipes
     recipes = fetch_recipes(sb)
@@ -242,17 +191,7 @@ def main() -> None:
     # 3. Save plan
     plan_id = save_weekly_plan(sb, selection, week_start)
 
-    # 4. Build SMS — resolve IDs to names
-    all_recipes_by_id = {r["id"]: r for r in recipes["lunches"] + recipes["dinners"]}
-    lunch_recipes  = [all_recipes_by_id[i] for i in selection["lunch_ids"]  if i in all_recipes_by_id]
-    dinner_recipes = [all_recipes_by_id[i] for i in selection["dinner_ids"] if i in all_recipes_by_id]
-    sms_body = build_sms(lunch_recipes, dinner_recipes, week_start, app_url)
-
-    # 5. Send to both numbers
-    for phone in [os.environ["PHONE_NUMBER_1"], os.environ["PHONE_NUMBER_2"]]:
-        send_sms(phone, sms_body)
-
-    # 6. Log run
+    # 4. Log run
     sb.table("meal_pipeline_runs").insert({
         "job": "saturday_suggest",
         "status": "success",
