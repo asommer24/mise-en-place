@@ -1,27 +1,27 @@
 """
-sms_inbound.py
---------------
-FastAPI webhook called by Twilio when either user sends an SMS to your number.
+ingest.py
+---------
+FastAPI ingest endpoint for adding recipes to the queue.
 
-Handles two SMS patterns:
-  1. Instagram link  → fetch metadata, extract recipe, add to queue
-  2. Recipe URL      → fetch page, extract recipe, add to queue  
-  3. Plain text name → search existing library or create stub recipe in queue
-  4. "status"        → reply with this week's plan summary
-  5. "list"          → reply with top 5 queued recipes
+Recipes reach the agent by being submitted to POST /ingest — either pasted
+into the web app's Queue box, or shared from Instagram via a one-tap iOS
+Share-sheet Shortcut. There is no official Instagram API for reading a private
+"Saved" collection, so recipes are submitted per-post rather than auto-pulled.
 
-Deploy this as a Vercel serverless function or Railway service.
+Handles two payload shapes:
+  1. {"url": "https://instagram.com/p/..."}  → fetch, extract recipe, queue it
+  2. {"name": "Lemon Orzo Salad"}            → match existing library or queue a stub
+
+Auth: every request must send header  X-Ingest-Token: <INGEST_TOKEN>.
+
+Deploy as a persistent web service (Railway). See Procfile.
 
 Env vars required:
     ANTHROPIC_API_KEY
     SUPABASE_URL
     SUPABASE_SERVICE_KEY
-    TWILIO_ACCOUNT_SID
-    TWILIO_AUTH_TOKEN
-    TWILIO_FROM_NUMBER
-    PHONE_NUMBER_1
-    PHONE_NUMBER_2
-    INSTAGRAM_SCRAPER_API_KEY   (optional — RapidAPI Instagram scraper)
+    INGEST_TOKEN                 (shared secret guarding the endpoint)
+    INSTAGRAM_SCRAPER_API_KEY    (optional — RapidAPI Instagram scraper)
 """
 
 import json
@@ -32,22 +32,43 @@ from datetime import datetime, timezone
 
 import anthropic
 import httpx
-from fastapi import FastAPI, Form, Response
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from supabase import create_client
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("mise.sms")
+logger = logging.getLogger("mise.ingest")
 
 app = FastAPI()
 
-ALLOWED_PHONES = {
-    os.getenv("PHONE_NUMBER_1", ""),
-    os.getenv("PHONE_NUMBER_2", ""),
-}
+# The web app calls /ingest from a different origin (Vercel frontend → Railway
+# API, or localhost:5173 → localhost:8000 in dev). Allow it. Set FRONTEND_ORIGIN
+# (comma-separated) to lock this down; defaults to "*". Auth is via the
+# X-Ingest-Token header, not cookies, so credentials stay off.
+_origins = os.getenv("FRONTEND_ORIGIN", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _origins],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 URL_PATTERN = re.compile(r'https?://\S+')
 INSTAGRAM_PATTERN = re.compile(r'https?://(www\.)?instagram\.com/\S+')
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+def require_token(x_ingest_token: str | None) -> None:
+    """Raise 401 unless the request carries the shared secret."""
+    expected = os.environ.get("INGEST_TOKEN", "")
+    if not expected or x_ingest_token != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing ingest token")
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +104,7 @@ Return ONLY valid JSON:
 }
 
 meal_type rules:
-  - "lunch" if the dish is a bowl, salad, soup, wrap, grain dish, or anything 
+  - "lunch" if the dish is a bowl, salad, soup, wrap, grain dish, or anything
      described as meal-prep friendly or make-ahead
   - "dinner" for everything else
 
@@ -126,7 +147,6 @@ def fetch_url_content(url: str) -> str:
         resp.raise_for_status()
 
         # Very light HTML strip
-        import re
         text = re.sub(r'<script[^>]*>.*?</script>', '', resp.text, flags=re.DOTALL)
         text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
         text = re.sub(r'<[^>]+>', ' ', text)
@@ -139,15 +159,16 @@ def fetch_url_content(url: str) -> str:
 
 def fetch_instagram_content(url: str) -> str:
     """
-    Attempt to get Instagram post content.
-    Uses RapidAPI Instagram scraper if key is set; otherwise falls back
-    to fetching the public embed URL.
+    Attempt to get an Instagram post/reel's caption (where the recipe lives).
+    Uses the RapidAPI Instagram scraper if a key is set; otherwise falls back
+    to the public "captioned" embed page, which (unlike plain /embed/) includes
+    the caption text for posts (/p/), reels (/reel/), and IGTV (/tv/).
     """
     api_key = os.getenv("INSTAGRAM_SCRAPER_API_KEY")
 
     if api_key:
-        # RapidAPI Instagram scraper
-        shortcode = re.search(r'/p/([A-Za-z0-9_-]+)', url)
+        # RapidAPI Instagram scraper — handle /p/, /reel/, /reels/, /tv/ links
+        shortcode = re.search(r'/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
         if shortcode:
             try:
                 resp = httpx.get(
@@ -161,13 +182,15 @@ def fetch_instagram_content(url: str) -> str:
                 )
                 data = resp.json()
                 caption = data.get("data", {}).get("caption", {}).get("text", "")
-                return caption
+                if caption:
+                    return caption
             except Exception as exc:
                 logger.warning("Instagram API failed: %s", exc)
 
-    # Fallback: embed URL
-    embed_url = url.rstrip('/') + "/embed/"
-    return fetch_url_content(embed_url)
+    # Fallback: the public "captioned" embed page includes the caption text.
+    # Strip any query string (?utm_source=…) before appending the embed path.
+    clean_url = url.split('?')[0].rstrip('/')
+    return fetch_url_content(clean_url + "/embed/captioned/")
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +198,7 @@ def fetch_instagram_content(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
-                         source_type: str, submitted_by: str) -> str:
+                         source_type: str) -> str:
     """Returns the new recipe ID."""
     row = {
         "name": recipe_data["name"],
@@ -199,117 +222,34 @@ def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
 
 
 # ---------------------------------------------------------------------------
-# Twilio reply helper
+# Ingest endpoint
 # ---------------------------------------------------------------------------
 
-def twiml_reply(message: str) -> Response:
-    """Return a TwiML response that sends an SMS back."""
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<Response>'
-        f'<Message>{message}</Message>'
-        '</Response>'
-    )
-    return Response(content=xml, media_type="application/xml")
+class IngestRequest(BaseModel):
+    url: str | None = None
+    name: str | None = None
+    submitted_by: str = "web"
 
 
-# ---------------------------------------------------------------------------
-# Status / list query handlers
-# ---------------------------------------------------------------------------
-
-def handle_status_query(sb) -> str:
-    from datetime import date, timedelta
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    plan = (
-        sb.table("weekly_plans")
-        .select("lunches,dinners,status,week_start")
-        .eq("week_start", week_start.isoformat())
-        .maybe_single()
-        .execute()
-    ).data
-
-    if not plan:
-        return "No plan set for this week yet. Check back Saturday!"
-
-    all_ids = (plan["lunches"] or []) + (plan["dinners"] or [])
-    recipes = (
-        sb.table("recipes").select("id,name,meal_type")
-        .in_("id", all_ids).execute()
-    ).data or []
-    by_id = {r["id"]: r for r in recipes}
-
-    lunches = [by_id[i]["name"] for i in plan["lunches"] if i in by_id]
-    dinners = [by_id[i]["name"] for i in plan["dinners"] if i in by_id]
-
-    return (
-        f"Week of {plan['week_start']} [{plan['status']}]\n"
-        f"LUNCHES: {', '.join(lunches)}\n"
-        f"DINNERS: {', '.join(dinners)}"
-    )
-
-
-def handle_list_query(sb) -> str:
-    queued = (
-        sb.table("recipes")
-        .select("name,meal_type")
-        .eq("in_queue", True)
-        .order("queue_priority", desc=True)
-        .limit(5)
-        .execute()
-    ).data or []
-
-    if not queued:
-        return "No recipes in queue. Send a link or recipe name to add one!"
-    items = "\n".join(f"  · {r['name']} ({r['meal_type']})" for r in queued)
-    return f"Queue ({len(queued)} recipes):\n{items}"
-
-
-# ---------------------------------------------------------------------------
-# Main webhook
-# ---------------------------------------------------------------------------
-
-@app.post("/webhook/sms")
-async def sms_webhook(
-    From: str = Form(...),
-    Body: str = Form(...),
-):
-    # Validate sender
-    if ALLOWED_PHONES and From not in ALLOWED_PHONES:
-        logger.warning("SMS from unknown number %s — ignored", From)
-        return Response(status_code=204)
+@app.post("/ingest")
+def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)):
+    require_token(x_ingest_token)
 
     sb = get_sb()
-    body = Body.strip()
-    lower = body.lower()
-
-    # ── Commands ──
-    if lower in ("status", "this week", "week"):
-        return twiml_reply(handle_status_query(sb))
-
-    if lower in ("list", "queue"):
-        return twiml_reply(handle_list_query(sb))
-
-    if lower in ("help", "?"):
-        return twiml_reply(
-            "Mise en Place commands:\n"
-            "  status — see this week's plan\n"
-            "  list — see recipe queue\n"
-            "  Send an Instagram/URL link — add recipe to queue\n"
-            "  Send a recipe name — add stub to queue"
-        )
 
     # ── URL / Instagram link ──
-    url_match = URL_PATTERN.search(body)
-    if url_match:
+    if req.url:
+        url_match = URL_PATTERN.search(req.url)
+        if not url_match:
+            raise HTTPException(status_code=400, detail="Not a valid URL")
         url = url_match.group(0)
         is_instagram = bool(INSTAGRAM_PATTERN.match(url))
         source_type = "instagram" if is_instagram else "url"
 
         # Log submission
         sub_res = sb.table("recipe_submissions").insert({
-            "submitted_by": From,
-            "raw_message": body,
+            "submitted_by": req.submitted_by,
+            "raw_message": req.url,
             "parsed_url": url,
             "status": "processing",
         }).execute()
@@ -324,9 +264,9 @@ async def sms_webhook(
                 "status": "failed",
                 "processed_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", sub_id).execute()
-            return twiml_reply(
-                "⚠️ Couldn't read that link. Try sending the recipe name instead, "
-                "and we'll add it manually."
+            raise HTTPException(
+                status_code=422,
+                detail="Couldn't read that link. Try the recipe name instead.",
             )
 
         recipe = extract_recipe_from_text(content, url)
@@ -335,12 +275,12 @@ async def sms_webhook(
                 "status": "failed",
                 "processed_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", sub_id).execute()
-            return twiml_reply(
-                "⚠️ Couldn't parse a recipe from that link. "
-                "Try sending just the recipe name!"
+            raise HTTPException(
+                status_code=422,
+                detail="Couldn't parse a recipe from that link. Try the recipe name instead.",
             )
 
-        recipe_id = save_recipe_to_queue(sb, recipe, url, source_type, From)
+        recipe_id = save_recipe_to_queue(sb, recipe, url, source_type)
 
         sb.table("recipe_submissions").update({
             "status": "added",
@@ -348,47 +288,49 @@ async def sms_webhook(
             "processed_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", sub_id).execute()
 
-        return twiml_reply(
-            f"✅ Added \"{recipe['name']}\" to the queue! "
-            f"It'll be prioritised for next week's plan."
-        )
+        return {"ok": True, "recipe_id": recipe_id, "name": recipe["name"],
+                "message": f'Added "{recipe["name"]}" to the queue.'}
 
     # ── Plain text recipe name ──
-    # Search if it exists already
-    existing = (
-        sb.table("recipes")
-        .select("id, name")
-        .ilike("name", f"%{body[:50]}%")
-        .limit(1)
-        .execute()
-    ).data
+    if req.name:
+        name = req.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Empty recipe name")
 
-    if existing:
-        match = existing[0]
-        # Move to queue if not already there
-        sb.table("recipes").update({
-            "in_queue": True,
-            "queue_priority": 10,
-        }).eq("id", match["id"]).execute()
-        return twiml_reply(
-            f"✅ Found \"{match['name']}\" in the library and added it to the queue!"
-        )
-    else:
+        # Search if it exists already
+        existing = (
+            sb.table("recipes")
+            .select("id, name")
+            .ilike("name", f"%{name[:50]}%")
+            .limit(1)
+            .execute()
+        ).data
+
+        if existing:
+            match = existing[0]
+            sb.table("recipes").update({
+                "in_queue": True,
+                "queue_priority": 10,
+            }).eq("id", match["id"]).execute()
+            return {"ok": True, "recipe_id": match["id"], "name": match["name"],
+                    "message": f'Found "{match["name"]}" in the library and queued it.'}
+
         # Create a stub recipe
         stub = {
-            "name": body[:100],
+            "name": name[:100],
             "meal_type": "dinner",   # default; user can update on web app
-            "description": "Added via SMS — fill in details on the web app.",
+            "description": "Added via web — fill in details on the web app.",
             "ingredients": [],
-            "source_type": "sms",
+            "source_type": req.submitted_by,
             "in_queue": True,
             "queue_priority": 8,
         }
-        sb.table("recipes").insert(stub).execute()
-        return twiml_reply(
-            f"✅ Added \"{body[:50]}\" to the queue as a stub. "
-            f"Fill in ingredients at the web app!"
-        )
+        res = sb.table("recipes").insert(stub).execute()
+        return {"ok": True, "recipe_id": res.data[0]["id"], "name": stub["name"],
+                "message": f'Added "{name[:50]}" to the queue as a stub. '
+                           f'Fill in ingredients on the web app.'}
+
+    raise HTTPException(status_code=400, detail="Provide either 'url' or 'name'")
 
 
 @app.get("/health")

@@ -1,1 +1,1 @@
-web: uvicorn agents.sms_inbound:app --host 0.0.0.0 --port $PORT
+web: uvicorn agents.ingest:app --host 0.0.0.0 --port $PORT
