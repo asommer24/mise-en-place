@@ -30,6 +30,9 @@ import os
 import re
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
+load_dotenv()  # load root .env for local dev (no-op when env vars are already set)
+
 import anthropic
 import httpx
 from fastapi import FastAPI, Header, HTTPException
