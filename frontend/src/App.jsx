@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "./supabase";
 
 const CATEGORY_ORDER = ["produce","protein","dairy","grain","bakery","pantry","condiment","frozen","other"];
@@ -267,6 +267,9 @@ export default function MiseEnPlace() {
   const [saved, setSaved] = useState(false);
   const [queueInput, setQueueInput] = useState("");
   const [queueFeedback, setQueueFeedback] = useState("");
+  const [triggering, setTriggering] = useState(false);
+  const [triggerStatus, setTriggerStatus] = useState("");
+  const triggerPollRef = useRef(null);
 
   // Resolve the plan's lunch/dinner IDs to full recipes, preserving array order
   // (json_agg in the SQL view doesn't guarantee order, so we resolve client-side).
@@ -292,6 +295,56 @@ export default function MiseEnPlace() {
       setLoading(false);
     })();
   }, []);
+
+  useEffect(() => () => { if (triggerPollRef.current) clearInterval(triggerPollRef.current); }, []);
+
+  const handleTrigger = async () => {
+    setTriggering(true);
+    setTriggerStatus("Generating plan…");
+
+    try {
+      const resp = await fetch(`${import.meta.env.VITE_INGEST_URL}/trigger/saturday-suggest`, {
+        method: "POST",
+        headers: { "X-Ingest-Token": import.meta.env.VITE_INGEST_TOKEN },
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        setTriggerStatus(`Error: ${data.detail || "Failed to trigger"}`);
+        setTriggering(false);
+        return;
+      }
+    } catch {
+      setTriggerStatus("Network error — is the ingest service running?");
+      setTriggering(false);
+      return;
+    }
+
+    // Poll Supabase for a new weekly_plans row
+    const startId = plan?.id ?? null;
+    let attempts = 0;
+    triggerPollRef.current = setInterval(async () => {
+      attempts++;
+      if (attempts > 40) {
+        clearInterval(triggerPollRef.current);
+        setTriggerStatus("Taking longer than expected — check back in a few minutes.");
+        setTriggering(false);
+        return;
+      }
+      const { data: plans } = await supabase
+        .from("weekly_plans")
+        .select("*")
+        .order("week_start", { ascending: false })
+        .limit(1);
+      const latest = plans?.[0];
+      if (latest && latest.id !== startId) {
+        clearInterval(triggerPollRef.current);
+        setPlan(latest);
+        setShoppingItems(latest.shopping_list || []);
+        setTriggering(false);
+        setTriggerStatus("");
+      }
+    }, 3000);
+  };
 
   const handleSwap = async (original, replacement) => {
     if (!plan) return;
@@ -420,10 +473,32 @@ export default function MiseEnPlace() {
             loading ? (
               <EmptyState>Loading this week's plan…</EmptyState>
             ) : !plan ? (
-              <EmptyState>
-                No plan yet. Saturday's cron picks 5 lunches + 3 dinners — check
-                back then, or add recipes in the Queue tab.
-              </EmptyState>
+              <div style={{ textAlign:"center", padding:"60px 20px" }}>
+                <div style={{ color:"#5a4030", fontSize:"14px",
+                  lineHeight:"1.6", marginBottom:"24px" }}>
+                  No plan yet. Saturday's cron picks 5 lunches + 3 dinners — or
+                  generate one now.
+                </div>
+                <button
+                  onClick={handleTrigger}
+                  disabled={triggering}
+                  style={{
+                    padding:"12px 28px",
+                    background: triggering ? "rgba(200,168,122,0.05)" : "rgba(200,168,122,0.12)",
+                    border:"1px solid rgba(200,168,122,0.3)", borderRadius:"10px",
+                    color: triggering ? "#5a4030" : "#c8a87a",
+                    fontSize:"14px", fontWeight:"600", cursor: triggering ? "default" : "pointer",
+                    fontFamily:"'Crimson Pro',Georgia,serif", transition:"all 0.2s",
+                  }}
+                >
+                  {triggering ? "⏳ Generating…" : "Generate Plan Now"}
+                </button>
+                {triggerStatus && (
+                  <div style={{ fontSize:"12px", color:"#806040", marginTop:"12px" }}>
+                    {triggerStatus}
+                  </div>
+                )}
+              </div>
             ) : (
             <div>
               <div style={{ marginBottom:"28px" }}>
@@ -474,7 +549,28 @@ export default function MiseEnPlace() {
                 }}>
                   {saved ? "✓ Plan Confirmed" : "Confirm This Week's Plan"}
                 </button>
+                <button
+                  onClick={handleTrigger}
+                  disabled={triggering}
+                  title="Regenerate plan"
+                  style={{
+                    padding:"14px 18px",
+                    background: triggering ? "rgba(200,168,122,0.03)" : "rgba(200,168,122,0.06)",
+                    border:"1px solid rgba(200,168,122,0.15)", borderRadius:"10px",
+                    color: triggering ? "#5a4030" : "#806040",
+                    fontSize:"16px", cursor: triggering ? "default" : "pointer",
+                    transition:"all 0.2s",
+                  }}
+                >
+                  {triggering ? "⏳" : "↺"}
+                </button>
               </div>
+              {triggerStatus && (
+                <div style={{ fontSize:"12px", color:"#806040",
+                  marginTop:"-16px", marginBottom:"16px", textAlign:"center" }}>
+                  {triggerStatus}
+                </div>
+              )}
             </div>
             )
           )}
