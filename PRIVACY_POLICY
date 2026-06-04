@@ -32,12 +32,12 @@ content of links you explicitly submit is fetched.
 4. Third Parties
 Submitted content is processed by the Anthropic Claude API (recipe parsing and
 shopping-list consolidation) and stored in Supabase. The shopping list is
-written to your chosen list app (Apple Reminders via CalDAV, or Todoist). We do
-not sell, rent, or otherwise share data with any other third party.
+written to Todoist. We do not sell, rent, or otherwise share data with any
+other third party.
 
 5. Data Storage and Security
 Data is stored in a private Supabase database with row-level security enabled
-and is not publicly accessible. Secrets (API keys, the ingest token, CalDAV/
+and is not publicly accessible. Secrets (API keys, the ingest token, and
 Todoist credentials) are stored as encrypted environment variables in GitHub
 Secrets and the hosting platform, accessible only to the account owner.
 
