@@ -35,7 +35,7 @@ load_dotenv()  # load root .env for local dev (no-op when env vars are already s
 
 import anthropic
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
@@ -334,6 +334,25 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
                            f'Fill in ingredients on the web app.'}
 
     raise HTTPException(status_code=400, detail="Provide either 'url' or 'name'")
+
+
+@app.post("/trigger/saturday-suggest")
+def trigger_saturday_suggest(
+    background_tasks: BackgroundTasks,
+    x_ingest_token: str | None = Header(default=None),
+):
+    """Trigger the Saturday meal-selection agent on demand."""
+    require_token(x_ingest_token)
+    background_tasks.add_task(_run_saturday)
+    return {"ok": True, "message": "Meal plan generation started"}
+
+
+def _run_saturday() -> None:
+    from agents.saturday_suggest import main as saturday_main
+    try:
+        saturday_main()
+    except Exception as exc:
+        logger.error("saturday_suggest trigger failed: %s", exc)
 
 
 @app.get("/health")

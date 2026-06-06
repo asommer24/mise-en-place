@@ -183,8 +183,7 @@ def main() -> None:
     # 1. Fetch recipes
     recipes = fetch_recipes(sb)
     if len(recipes["lunches"]) < 5 or len(recipes["dinners"]) < 3:
-        logger.error("Not enough recipes in DB (need ≥5 lunches, ≥3 dinners)")
-        sys.exit(1)
+        raise RuntimeError("Not enough recipes in DB (need ≥5 lunches, ≥3 dinners)")
 
     # 2. Claude selection
     selection = select_recipes_with_claude(recipes)
@@ -208,4 +207,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
