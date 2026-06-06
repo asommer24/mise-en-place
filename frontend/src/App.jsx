@@ -41,7 +41,11 @@ function RecipeCard({ recipe, onSwap, compact = false }) {
       )}
       {recipe.source_url && (
         <div style={{ position:"absolute", top: recipe.in_queue ? 32 : 10, right:10,
-          fontSize:"10px", color:"#c8a87a" }}>📸 IG</div>
+          fontSize:"10px", color:"#c8a87a" }}>
+          {/instagram\.com/i.test(recipe.source_url)
+            ? "📸 IG"
+            : `🔗 ${(() => { try { return new URL(recipe.source_url).hostname.replace(/^www\./, ""); } catch { return "link"; } })()}`}
+        </div>
       )}
 	{(recipe.tags || []).includes("vegetarian") && (
           <div style={{ position:"absolute", top: recipe.in_queue ? 52 : 30, right:10,
@@ -650,7 +654,7 @@ export default function MiseEnPlace() {
                     value={queueInput}
                     onChange={e => setQueueInput(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && handleQueueSubmit()}
-                    placeholder="Paste Instagram link or recipe name…"
+                    placeholder="Paste a recipe link or name…"
                     style={{
                       flex:1, background:"rgba(255,252,245,0.04)",
                       border:"1px solid rgba(200,168,122,0.15)",
