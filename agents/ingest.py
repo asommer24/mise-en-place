@@ -118,7 +118,8 @@ No markdown, no preamble.
 """
 
 
-def extract_recipe_from_text(content: str, source_url: str = "") -> dict | None:
+def extract_recipe_from_text(content: str, source_url: str = "") -> tuple[dict | None, str]:
+    """Return (recipe_dict, error_detail). error_detail is empty string on success."""
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     prompt = f"Source URL: {source_url}\n\nContent:\n{content[:6000]}"
 
@@ -129,21 +130,29 @@ def extract_recipe_from_text(content: str, source_url: str = "") -> dict | None:
             system=RECIPE_EXTRACT_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        result = json.loads(response.content[0].text.strip())
+        raw = response.content[0].text.strip()
+        result = json.loads(raw)
         if "error" in result:
-            return None
-        return result
+            detail = f"Claude: {result['error']} (content was {len(content)} chars)"
+            logger.warning("Recipe extraction returned error for %s: %s", source_url, detail)
+            return None, detail
+        return result, ""
+    except json.JSONDecodeError as exc:
+        detail = f"JSON parse error: {exc}"
+        logger.error("Recipe extraction JSON decode failed for %s: %s", source_url, exc)
+        return None, detail
     except Exception as exc:
-        logger.error("Recipe extraction failed: %s", exc)
-        return None
+        detail = f"Extraction exception: {exc}"
+        logger.error("Recipe extraction failed for %s: %s", source_url, exc)
+        return None, detail
 
 
 # ---------------------------------------------------------------------------
 # URL content fetching
 # ---------------------------------------------------------------------------
 
-def fetch_url_content(url: str) -> str:
-    """Fetch a webpage and return its text content."""
+def fetch_url_content(url: str) -> tuple[str, str]:
+    """Fetch a webpage and return (text_content, error_detail). error_detail is empty on success."""
     try:
         resp = httpx.get(url, timeout=15, follow_redirects=True,
                          headers={"User-Agent": "Mozilla/5.0"})
@@ -154,20 +163,23 @@ def fetch_url_content(url: str) -> str:
         text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
         text = re.sub(r'<[^>]+>', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
-        return text[:8000]
+        return text[:8000], ""
     except Exception as exc:
+        detail = f"Fetch error ({type(exc).__name__}): {exc}"
         logger.warning("URL fetch failed for %s: %s", url, exc)
-        return ""
+        return "", detail
 
 
-def fetch_instagram_content(url: str) -> str:
+def fetch_instagram_content(url: str) -> tuple[str, str]:
     """
     Attempt to get an Instagram post/reel's caption (where the recipe lives).
+    Returns (content, error_detail). error_detail is empty on success.
     Uses the RapidAPI Instagram scraper if a key is set; otherwise falls back
     to the public "captioned" embed page, which (unlike plain /embed/) includes
     the caption text for posts (/p/), reels (/reel/), and IGTV (/tv/).
     """
     api_key = os.getenv("INSTAGRAM_SCRAPER_API_KEY")
+    errors = []
 
     if api_key:
         # RapidAPI Instagram scraper — handle /p/, /reel/, /reels/, /tv/ links
@@ -186,14 +198,20 @@ def fetch_instagram_content(url: str) -> str:
                 data = resp.json()
                 caption = data.get("data", {}).get("caption", {}).get("text", "")
                 if caption:
-                    return caption
+                    return caption, ""
+                errors.append(f"Instagram API returned no caption (keys: {list(data.keys())})")
             except Exception as exc:
                 logger.warning("Instagram API failed: %s", exc)
+                errors.append(f"Instagram API error ({type(exc).__name__}): {exc}")
 
     # Fallback: the public "captioned" embed page includes the caption text.
     # Strip any query string (?utm_source=…) before appending the embed path.
     clean_url = url.split('?')[0].rstrip('/')
-    return fetch_url_content(clean_url + "/embed/captioned/")
+    content, err = fetch_url_content(clean_url + "/embed/captioned/")
+    if content:
+        return content, ""
+    errors.append(f"Embed fallback: {err}")
+    return "", "; ".join(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -259,12 +277,13 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
         sub_id = sub_res.data[0]["id"]
 
         # Fetch content
-        content = (fetch_instagram_content(url) if is_instagram
-                   else fetch_url_content(url))
+        content, fetch_error = (fetch_instagram_content(url) if is_instagram
+                                else fetch_url_content(url))
 
         if not content:
             sb.table("recipe_submissions").update({
                 "status": "failed",
+                "error_detail": fetch_error or "No content returned",
                 "processed_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", sub_id).execute()
             raise HTTPException(
@@ -272,10 +291,11 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
                 detail="Couldn't read that link. Try the recipe name instead.",
             )
 
-        recipe = extract_recipe_from_text(content, url)
+        recipe, extract_error = extract_recipe_from_text(content, url)
         if not recipe:
             sb.table("recipe_submissions").update({
                 "status": "failed",
+                "error_detail": extract_error or f"Claude returned no recipe (content was {len(content)} chars)",
                 "processed_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", sub_id).execute()
             raise HTTPException(

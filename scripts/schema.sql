@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS recipe_submissions (
     raw_message     TEXT        NOT NULL,       -- original SMS text
     parsed_url      TEXT,                       -- extracted Instagram/URL
     status          TEXT        DEFAULT 'pending',  -- 'pending'|'processing'|'added'|'failed'
+    error_detail    TEXT,                       -- populated on failure: fetch/parse/extraction error
     recipe_id       UUID        REFERENCES recipes(id),
     submitted_at    TIMESTAMPTZ DEFAULT NOW(),
     processed_at    TIMESTAMPTZ
