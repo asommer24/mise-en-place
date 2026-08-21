@@ -20,8 +20,9 @@ import os
 import sys
 from datetime import date, timedelta
 
-import anthropic
 from supabase import create_client
+
+from agents.claude import ask_json
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -37,8 +38,10 @@ def get_supabase():
                          os.environ["SUPABASE_SERVICE_KEY"])
 
 
-def next_monday() -> date:
-    today = date.today()
+def next_monday(today: date | None = None) -> date:
+    """The Monday a plan is filed under. `today` is injectable so the week
+    math is testable without waiting for Saturday to come around."""
+    today = today or date.today()
     days_ahead = 7 - today.weekday()  # Monday = 0
     if days_ahead == 7:
         days_ahead = 0
@@ -92,21 +95,46 @@ def fetch_recipes(sb) -> dict:
 SELECTION_PROMPT = """
 You are a meal planning assistant for a vegetarian household. Your job is to choose:
   - 5 LUNCH recipes: must be make-ahead friendly (can be prepped Sunday, refrigerated, reheated or eaten cold all week)
-  - 3 DINNER recipes: MUST be vegetarian only — no meat, no fish, no poultry of any kind
+  - 3 DINNER recipes: the dinner candidates below are already filtered to vegetarian recipes
 
 Selection rules:
 1. Prefer recipes marked in_queue=true (user submitted — they want these soon)
-2. For dinners, ONLY select recipes where vegetarian=true — this is a strict requirement
-3. Avoid repeating recipes with high times_suggested values
-4. Ensure variety: don't pick 3 pasta dishes or 3 soups
-5. Balance nutrition across the week where possible
-6. Aim for varied cuisines across the 3 dinners (e.g. Italian, Mexican, Asian)
+2. Avoid repeating recipes with high times_suggested values
+3. Ensure variety: don't pick 3 pasta dishes or 3 soups
+4. Balance nutrition across the week where possible
+5. Aim for varied cuisines across the 3 dinners (e.g. Italian, Mexican, Asian)
+
+Return ONLY valid JSON:
+{
+  "lunch_ids": ["<id>", "<id>", "<id>", "<id>", "<id>"],
+  "dinner_ids": ["<id>", "<id>", "<id>"],
+  "reasoning": "One short paragraph on why these eight."
+}
+
+Exactly 5 lunch_ids and 3 dinner_ids, no duplicates. Every id must be copied
+exactly from the recipes provided. No markdown, no preamble.
 """
 
 
-def select_recipes_with_claude(recipes: dict) -> dict:
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+def validate_selection(result: dict, lunch_ids: set, dinner_ids: set) -> None:
+    """
+    Claude's output is a trust boundary: an id it invented would be written
+    straight into weekly_plans.lunches and then blow up the downstream
+    .in_() update with a UUID that matches nothing.
+    """
+    for key, want, valid in (("lunch_ids", 5, lunch_ids),
+                             ("dinner_ids", 3, dinner_ids)):
+        got = result.get(key) or []
+        if len(got) != want:
+            raise RuntimeError(f"Claude returned {len(got)} {key}, expected {want}")
+        if len(set(got)) != want:
+            raise RuntimeError(f"Claude returned duplicate {key}: {got}")
+        unknown = [i for i in got if i not in valid]
+        if unknown:
+            raise RuntimeError(f"Claude returned unknown {key}: {unknown}")
 
+
+def select_recipes_with_claude(recipes: dict) -> dict:
     # Build a compact recipe list for the prompt
     all_recipes = []
     for r in recipes["lunches"] + recipes["dinners"]:
@@ -123,14 +151,10 @@ def select_recipes_with_claude(recipes: dict) -> dict:
 
     user_msg = f"Available recipes:\n{json.dumps(all_recipes, indent=2)}"
 
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=500,
-        system=SELECTION_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-
-    result = json.loads(response.content[0].text.strip())
+    result = ask_json(SELECTION_PROMPT, user_msg, max_tokens=2000)
+    validate_selection(result,
+                       {r["id"] for r in recipes["lunches"]},
+                       {r["id"] for r in recipes["dinners"]})
     logger.info("Claude selected lunches=%s dinners=%s | %s",
                 result["lunch_ids"], result["dinner_ids"], result["reasoning"])
     return result
@@ -162,12 +186,17 @@ def save_weekly_plan(sb, selection: dict, week_start: date) -> str:
     # Increment times_suggested for chosen recipes
     all_ids = selection["lunch_ids"] + selection["dinner_ids"]
     for recipe_id in all_ids:
-        sb.rpc("increment_times_suggested", {"recipe_id": recipe_id}).execute()
+        # A cosmetic counter is not worth losing a good plan over — the RPC is
+        # defined in scripts/schema.sql and may not be applied yet.
+        try:
+            sb.rpc("increment_times_suggested", {"recipe_id": recipe_id}).execute()
+        except Exception as exc:
+            logger.warning("increment_times_suggested failed for %s: %s "
+                           "(apply scripts/schema.sql?)", recipe_id, exc)
 
     # Remove from queue now that they're scheduled
-    queued_ids = [r for r in all_ids]
     sb.table("recipes").update({"in_queue": False}) \
-        .in_("id", queued_ids).execute()
+        .in_("id", all_ids).execute()
 
     return plan_id
 

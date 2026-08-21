@@ -30,15 +30,13 @@ import os
 import re
 from datetime import datetime, timezone
 
-from dotenv import load_dotenv
-load_dotenv()  # load root .env for local dev (no-op when env vars are already set)
-
-import anthropic
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
+
+from agents.claude import ask_json
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -120,18 +118,10 @@ No markdown, no preamble.
 
 def extract_recipe_from_text(content: str, source_url: str = "") -> tuple[dict | None, str]:
     """Return (recipe_dict, error_detail). error_detail is empty string on success."""
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     prompt = f"Source URL: {source_url}\n\nContent:\n{content[:6000]}"
 
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1500,
-            system=RECIPE_EXTRACT_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = response.content[0].text.strip()
-        result = json.loads(raw)
+        result = ask_json(RECIPE_EXTRACT_PROMPT, prompt, max_tokens=4000)
         if "error" in result:
             detail = f"Claude: {result['error']} (content was {len(content)} chars)"
             logger.warning("Recipe extraction returned error for %s: %s", source_url, detail)

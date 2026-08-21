@@ -22,10 +22,14 @@ import json
 import logging
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date
 
-import anthropic
 from supabase import create_client
+
+from agents.claude import ask_json
+# Import rather than re-derive: the bug this replaces was two copies of the
+# week math disagreeing, so the two agents must now agree by construction.
+from agents.saturday_suggest import next_monday
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -69,18 +73,15 @@ def get_supabase():
                          os.environ["SUPABASE_SERVICE_KEY"])
 
 
-def get_week_start() -> date:
-    """Returns Monday of the current week."""
-    today = date.today()
-    return today - timedelta(days=today.weekday())
-
-
 # ---------------------------------------------------------------------------
 # Step 1: Pull the weekly plan + recipe ingredients
 # ---------------------------------------------------------------------------
 
 def fetch_plan_with_recipes(sb) -> dict:
-    week_start = get_week_start()
+    # Saturday files the plan under next_monday(); running a day later, this
+    # job resolves to that same Monday. Using "this week's Monday" here made
+    # Sunday shop for the PREVIOUS week's plan, or find nothing at all.
+    week_start = next_monday()
 
     plan_res = (
         sb.table("weekly_plans")
@@ -128,17 +129,10 @@ def aggregate_ingredients(recipes: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def consolidate_with_claude(raw_ingredients: list[dict]) -> list[dict]:
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
     user_msg = f"Raw ingredients:\n{json.dumps(raw_ingredients, indent=2)}"
 
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2000,
-        system=CONSOLIDATION_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    consolidated = json.loads(response.content[0].text.strip())
+    # ~60 ingredient lines in, a categorised array out, plus thinking tokens.
+    consolidated = ask_json(CONSOLIDATION_PROMPT, user_msg, max_tokens=8000)
     logger.info("Consolidated to %d shopping list items", len(consolidated))
     return consolidated
 
@@ -161,19 +155,20 @@ def write_to_todoist(items: list[dict], week_start: date) -> None:
     api = TodoistAPI(os.environ["TODOIST_API_KEY"])
     project_name = os.getenv("TODOIST_PROJECT_NAME", "Groceries")
 
-    # Find or create project
-    projects = api.get_projects()
-    project = next((p for p in projects
+    # Find or create project. get_projects()/get_tasks() are paginators in
+    # todoist-api-python v3+ — they yield PAGES (lists), not individual items.
+    project = next((p for page in api.get_projects() for p in page
                     if p.name.lower() == project_name.lower()), None)
     if not project:
         project = api.add_project(name=project_name)
 
-    # Close/archive old tasks
-    existing_tasks = api.get_tasks(project_id=project.id)
-    for task in existing_tasks:
-        api.close_task(task_id=task.id)
+    # Close/archive old tasks (close_task was renamed complete_task in v3+)
+    for page in api.get_tasks(project_id=project.id):
+        for task in page:
+            api.complete_task(task.id)
 
-    week_label = week_start.strftime("%b %-d")
+    # Not strftime("%b %-d") — "%-d" is a glibc extension and raises on Windows.
+    week_label = f"{week_start:%b} {week_start.day}"
     by_category: dict[str, list] = {}
     for item in items:
         cat = item.get("category", "other")

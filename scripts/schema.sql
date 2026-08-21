@@ -110,6 +110,14 @@ CREATE TABLE IF NOT EXISTS meal_pipeline_runs (
     error       TEXT
 );
 
+-- This was the one table in the file with RLS left off, which means anyone
+-- holding the anon key (it ships in the public web bundle) could read the run
+-- log — plan ids and raw error text. The frontend never reads this table and
+-- the agents write with the service_role key, which bypasses RLS, so locking
+-- it down costs nothing.
+ALTER TABLE meal_pipeline_runs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Service role all runs" ON meal_pipeline_runs FOR ALL USING (auth.role() = 'service_role');
+
 
 -- ---------------------------------------------------------------------------
 -- 5. Useful views
@@ -171,7 +179,24 @@ CREATE OR REPLACE TRIGGER trg_plans_updated_at
 
 
 -- ---------------------------------------------------------------------------
+-- 6b. increment_times_suggested
+--     Called by saturday_suggest via sb.rpc() for each chosen recipe.
+--     Done in SQL so the read-modify-write is atomic in one round trip.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION increment_times_suggested(recipe_id UUID)
+RETURNS void AS $$
+    UPDATE recipes
+    SET times_suggested = COALESCE(times_suggested, 0) + 1
+    WHERE id = recipe_id;
+$$ LANGUAGE sql;
+
+
+-- ---------------------------------------------------------------------------
 -- 7. Seed a few starter recipes so the app isn't empty
+--
+--    NOTE: the ON CONFLICT DO NOTHING below is a no-op — there is no unique
+--    constraint on recipes.name — so re-running THIS block duplicates all six
+--    starter recipes. Section 7b is written to be safely re-runnable instead.
 -- ---------------------------------------------------------------------------
 INSERT INTO recipes (name, meal_type, description, tags, prep_time_mins, cook_time_mins, servings, ingredients) VALUES
 (
@@ -266,3 +291,134 @@ INSERT INTO recipes (name, meal_type, description, tags, prep_time_mins, cook_ti
       {"name":"chipotle in adobo","amount":"2","unit":"tbsp","category":"pantry"}]'::jsonb
 )
 ON CONFLICT DO NOTHING;
+
+
+-- ---------------------------------------------------------------------------
+-- 7b. Extra seeds so a fresh install can actually produce a plan
+--
+--     saturday_suggest needs >= 5 lunches and >= 3 dinners TAGGED 'vegetarian'.
+--     Section 7 alone ships 3 lunches and 0 vegetarian dinners, so the agent
+--     exits with "Not enough recipes" on a clean setup. These top it up to
+--     6 lunches and 4 vegetarian dinners (a little slack, so the selector has
+--     a real choice rather than exactly one valid answer).
+--
+--     Safe to re-run: each row is skipped if a recipe of that name exists.
+-- ---------------------------------------------------------------------------
+INSERT INTO recipes (name, meal_type, description, tags,
+                     prep_time_mins, cook_time_mins, servings, ingredients)
+SELECT v.name, v.meal_type, v.description, v.tags,
+       v.prep_time_mins, v.cook_time_mins, v.servings, v.ingredients
+FROM (VALUES
+(
+    'Curried Chickpea Salad Jars'::text,
+    'lunch'::text,
+    'Mashed chickpeas with curry powder, apple, and celery. Packs into jars and keeps all week.'::text,
+    ARRAY['make-ahead','vegetarian','cold','no-cook']::text[],
+    15::integer, 0::integer, 5::integer,
+    '[{"name":"chickpeas","amount":"3","unit":"cans","category":"pantry"},
+      {"name":"greek yogurt","amount":"1","unit":"cup","category":"dairy"},
+      {"name":"celery","amount":"4","unit":"stalks","category":"produce"},
+      {"name":"apple","amount":"1","unit":"","category":"produce"},
+      {"name":"curry powder","amount":"2","unit":"tbsp","category":"pantry"},
+      {"name":"red onion","amount":"1","unit":"small","category":"produce"},
+      {"name":"raisins","amount":"0.5","unit":"cup","category":"pantry"},
+      {"name":"lemon","amount":"1","unit":"","category":"produce"}]'::jsonb
+),
+(
+    'Farro Bowls with Roasted Squash',
+    'lunch',
+    'Nutty farro with maple-roasted butternut squash, feta, and arugula. Good warm or cold.',
+    ARRAY['make-ahead','vegetarian','healthy','grain-bowl']::text[],
+    20, 35, 5,
+    '[{"name":"farro","amount":"2","unit":"cups","category":"grain"},
+      {"name":"butternut squash","amount":"1","unit":"large","category":"produce"},
+      {"name":"feta","amount":"6","unit":"oz","category":"dairy"},
+      {"name":"arugula","amount":"5","unit":"oz","category":"produce"},
+      {"name":"pepitas","amount":"0.5","unit":"cup","category":"pantry"},
+      {"name":"maple syrup","amount":"2","unit":"tbsp","category":"pantry"},
+      {"name":"olive oil","amount":"4","unit":"tbsp","category":"pantry"},
+      {"name":"apple cider vinegar","amount":"3","unit":"tbsp","category":"condiment"}]'::jsonb
+),
+(
+    'Peanut Noodle Slaw',
+    'lunch',
+    'Cold rice noodles tossed with cabbage slaw and a punchy peanut-lime dressing. No reheating.',
+    ARRAY['make-ahead','vegetarian','cold','asian']::text[],
+    20, 8, 5,
+    '[{"name":"rice noodles","amount":"12","unit":"oz","category":"grain"},
+      {"name":"red cabbage","amount":"1","unit":"small head","category":"produce"},
+      {"name":"carrots","amount":"3","unit":"","category":"produce"},
+      {"name":"peanut butter","amount":"0.5","unit":"cup","category":"pantry"},
+      {"name":"lime","amount":"3","unit":"","category":"produce"},
+      {"name":"soy sauce","amount":"3","unit":"tbsp","category":"pantry"},
+      {"name":"fresh ginger","amount":"2","unit":"inch","category":"produce"},
+      {"name":"cilantro","amount":"1","unit":"bunch","category":"produce"},
+      {"name":"roasted peanuts","amount":"0.5","unit":"cup","category":"pantry"}]'::jsonb
+),
+(
+    'Black Bean & Sweet Potato Enchiladas',
+    'dinner',
+    'Rolled corn tortillas with black beans and roasted sweet potato under red chile sauce.',
+    ARRAY['vegetarian','mexican','crowd-pleaser']::text[],
+    25, 35, 4,
+    '[{"name":"corn tortillas","amount":"12","unit":"","category":"bakery"},
+      {"name":"black beans","amount":"2","unit":"cans","category":"pantry"},
+      {"name":"sweet potatoes","amount":"2","unit":"large","category":"produce"},
+      {"name":"red enchilada sauce","amount":"2","unit":"cups","category":"pantry"},
+      {"name":"monterey jack","amount":"8","unit":"oz","category":"dairy"},
+      {"name":"yellow onion","amount":"1","unit":"","category":"produce"},
+      {"name":"cumin","amount":"2","unit":"tsp","category":"pantry"},
+      {"name":"cilantro","amount":"1","unit":"bunch","category":"produce"}]'::jsonb
+),
+(
+    'Paneer Tikka Masala',
+    'dinner',
+    'Charred paneer in a creamy spiced tomato gravy. Serve with basmati and naan.',
+    ARRAY['vegetarian','indian','weeknight']::text[],
+    20, 30, 4,
+    '[{"name":"paneer","amount":"14","unit":"oz","category":"dairy"},
+      {"name":"crushed tomatoes","amount":"1","unit":"can","category":"pantry"},
+      {"name":"heavy cream","amount":"0.5","unit":"cup","category":"dairy"},
+      {"name":"basmati rice","amount":"2","unit":"cups","category":"grain"},
+      {"name":"naan","amount":"4","unit":"","category":"bakery"},
+      {"name":"garam masala","amount":"2","unit":"tbsp","category":"pantry"},
+      {"name":"fresh ginger","amount":"2","unit":"inch","category":"produce"},
+      {"name":"garlic","amount":"5","unit":"cloves","category":"produce"},
+      {"name":"yellow onion","amount":"1","unit":"large","category":"produce"}]'::jsonb
+),
+(
+    'Mushroom Ragu with Polenta',
+    'dinner',
+    'Slow-cooked mixed mushroom ragu over creamy parmesan polenta. Deeply savoury.',
+    ARRAY['vegetarian','italian','comfort']::text[],
+    15, 40, 4,
+    '[{"name":"cremini mushrooms","amount":"1.5","unit":"lbs","category":"produce"},
+      {"name":"dried porcini","amount":"1","unit":"oz","category":"pantry"},
+      {"name":"polenta","amount":"1.5","unit":"cups","category":"grain"},
+      {"name":"parmesan","amount":"4","unit":"oz","category":"dairy"},
+      {"name":"tomato paste","amount":"3","unit":"tbsp","category":"pantry"},
+      {"name":"red wine","amount":"1","unit":"cup","category":"pantry"},
+      {"name":"shallots","amount":"3","unit":"","category":"produce"},
+      {"name":"thyme","amount":"1","unit":"bunch","category":"produce"},
+      {"name":"butter","amount":"3","unit":"tbsp","category":"dairy"}]'::jsonb
+),
+(
+    'Crispy Tofu Banh Mi Bowls',
+    'dinner',
+    'Cornstarch-crisped tofu over rice with quick-pickled carrot and daikon, herbs, and sriracha mayo.',
+    ARRAY['vegetarian','vietnamese','quick']::text[],
+    20, 20, 4,
+    '[{"name":"extra-firm tofu","amount":"28","unit":"oz","category":"protein"},
+      {"name":"jasmine rice","amount":"2","unit":"cups","category":"grain"},
+      {"name":"daikon","amount":"1","unit":"small","category":"produce"},
+      {"name":"carrots","amount":"3","unit":"","category":"produce"},
+      {"name":"rice vinegar","amount":"0.5","unit":"cup","category":"condiment"},
+      {"name":"mayo","amount":"0.5","unit":"cup","category":"condiment"},
+      {"name":"sriracha","amount":"3","unit":"tbsp","category":"condiment"},
+      {"name":"cornstarch","amount":"0.5","unit":"cup","category":"pantry"},
+      {"name":"cilantro","amount":"1","unit":"bunch","category":"produce"},
+      {"name":"cucumber","amount":"1","unit":"","category":"produce"}]'::jsonb
+)
+) AS v(name, meal_type, description, tags,
+       prep_time_mins, cook_time_mins, servings, ingredients)
+WHERE NOT EXISTS (SELECT 1 FROM recipes r WHERE r.name = v.name);

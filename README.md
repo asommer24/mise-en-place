@@ -44,8 +44,15 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 ### 1. Supabase
 1. Create a free project at supabase.com
 2. SQL Editor → run `scripts/schema.sql` (creates tables, RLS policies, helper
-   views, and seeds a handful of starter recipes)
+   views, the `increment_times_suggested` function the Saturday agent calls,
+   and seeds enough recipes to produce a plan)
 3. Settings → API → copy Project URL + service_role key
+
+**Already set up?** Re-run sections **6b** and **7b** of `schema.sql` — 6b adds
+the `increment_times_suggested` function (previously called but never defined,
+so `times_suggested` never incremented) and 7b tops the library up to 6 lunches
+and 4 vegetarian dinners. Both are safely re-runnable. Do *not* re-run section 7
+— it has no unique constraint to conflict on, so it duplicates its recipes.
 
 ### 2. Todoist
 1. Todoist → **Settings → Integrations → Developer** → copy your API token
@@ -160,6 +167,29 @@ python -m agents.saturday_suggest
 python -m agents.sunday_shopping
 ```
 
+### Tests
+
+```bash
+python test_agents.py     # no network, no DB, no framework — just asserts
+```
+
+Covers the parts that broke in production: the Saturday/Sunday week alignment,
+JSON parsing of model replies (thinking blocks, code fences, truncation), and
+validation of the recipe ids Claude returns.
+
+### The Claude call
+
+All three agents share `agents/claude.py`. The model is `claude-sonnet-5` by
+default — override with `ANTHROPIC_MODEL` to pin or upgrade without editing
+code. Two things that module handles, which any new call site should reuse
+rather than reimplement:
+
+- **Read the text blocks, not `content[0]`.** Current models emit a `thinking`
+  block first, so `response.content[0].text` raises `AttributeError`.
+- **Thinking tokens count against `max_tokens`.** A budget that used to be
+  ample can now truncate mid-JSON; the helper says so plainly instead of
+  surfacing a confusing `JSONDecodeError`.
+
 ---
 
 ## Data Model (Supabase)
@@ -196,9 +226,11 @@ Optional: RapidAPI Instagram scraper ~$10/month if you want richer IG parsing.
 ```
 mise-en-place/
 ├── agents/
+│   ├── claude.py             # Shared: model id + JSON-reply parsing
 │   ├── saturday_suggest.py   # Saturday cron: picks the week's recipes
 │   ├── sunday_shopping.py    # Sunday cron: shopping list to Todoist
 │   └── ingest.py             # FastAPI: POST /ingest adds recipes to the queue
+├── test_agents.py            # Offline asserts: week math, JSON parsing, validation
 ├── scripts/
 │   └── schema.sql            # Supabase schema, RLS, views + seed recipes
 ├── frontend/
