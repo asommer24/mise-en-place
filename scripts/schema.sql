@@ -192,6 +192,52 @@ $$ LANGUAGE sql;
 
 
 -- ---------------------------------------------------------------------------
+-- 6c. Normalise tags on write
+--
+--     tags[] is a free-text array, and most of it is written by Claude during
+--     ingest — so "Mediterranean" and "mediterranean" both showed up, which
+--     rendered as two chips in the web app AND, more seriously, meant
+--     contains(tags, ['vegetarian']) in saturday_suggest would miss a recipe
+--     tagged "Vegetarian". Normalising here rather than in each caller means
+--     the guarantee holds no matter who writes the row.
+--
+--     Trims, lower-cases, drops blanks, de-duplicates. Note array_agg(DISTINCT)
+--     returns tags alphabetically, so tag order becomes consistent rather than
+--     insertion-ordered.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION normalize_tags()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.tags IS NULL THEN
+        NEW.tags := '{}';
+    ELSE
+        NEW.tags := COALESCE((
+            SELECT array_agg(DISTINCT lower(btrim(t)))
+            FROM unnest(NEW.tags) AS t
+            WHERE btrim(t) <> ''
+        ), '{}');
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_recipes_normalize_tags
+    BEFORE INSERT OR UPDATE OF tags ON recipes
+    FOR EACH ROW EXECUTE FUNCTION normalize_tags();
+
+-- One-time backfill for rows written before the trigger existed.
+UPDATE recipes
+SET tags = COALESCE((
+        SELECT array_agg(DISTINCT lower(btrim(t)))
+        FROM unnest(tags) AS t
+        WHERE btrim(t) <> ''
+    ), '{}')
+WHERE EXISTS (
+    SELECT 1 FROM unnest(tags) AS t WHERE t <> lower(btrim(t))
+);
+
+
+-- ---------------------------------------------------------------------------
 -- 7. Seed a few starter recipes so the app isn't empty
 --
 --    NOTE: the ON CONFLICT DO NOTHING below is a no-op — there is no unique

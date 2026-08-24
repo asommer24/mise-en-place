@@ -22,8 +22,48 @@ function EmptyState({ children }) {
   );
 }
 
-function RecipeCard({ recipe, onSwap, compact = false }) {
+// Highlight search hits inside a name. Single characters are skipped — one
+// letter matches nearly every recipe, and marking all of it is just noise.
+function Highlight({ text, query }) {
+  const words = (query || "").toLowerCase().split(/\s+/).filter(w => w.length > 1);
+  if (!words.length) return text;
+  const re = new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
+  const hit = new Set(words);
+  return text.split(re).map((part, i) =>
+    hit.has(part.toLowerCase())
+      ? <mark key={i} style={{ background:"rgba(200,168,122,0.28)",
+          color:"#f5ede0", borderRadius:"2px" }}>{part}</mark>
+      : part
+  );
+}
+
+// A tag rendered as a filter control. Same vocabulary as the chips in the
+// Library filter bar, so clicking one in the list filters by it.
+const TAG_PALETTE = {
+  meal: { fg:"#f5ede0", bg:"rgba(245,237,224,0.09)", line:"rgba(245,237,224,0.2)",  on:"#f5ede0" },
+  veg:  { fg:"#7ac87a", bg:"rgba(122,200,122,0.1)",  line:"rgba(122,200,122,0.22)", on:"#7ac87a" },
+  tag:  { fg:"#c8a87a", bg:"rgba(200,168,122,0.1)",  line:"rgba(200,168,122,0.15)", on:"#c8a87a" },
+};
+
+function TagPill({ label, kind = "tag", on, onClick }) {
+  const p = TAG_PALETTE[kind];
+  return (
+    <button onClick={onClick} aria-pressed={on} style={{
+      fontSize:"10px", padding:"2px 8px", borderRadius:"20px", cursor:"pointer",
+      fontFamily:"'Crimson Pro',Georgia,serif",
+      color: on ? "#1c1206" : p.fg,
+      background: on ? p.on : p.bg,
+      border: `1px solid ${on ? p.on : p.line}`,
+      fontWeight: on ? "600" : "400",
+    }}>{label}</button>
+  );
+}
+
+// onTag/isOn turn the tag row into filter controls (Library tab). Without
+// them the card renders the old read-only two-tag summary.
+function RecipeCard({ recipe, onSwap, compact = false, onTag, isOn, query }) {
   const totalMins = (recipe.prep_time_mins || 0) + (recipe.cook_time_mins || 0);
+  const interactive = !!onTag;
   return (
     <div style={{
       background: "rgba(255,252,245,0.06)",
@@ -47,7 +87,8 @@ function RecipeCard({ recipe, onSwap, compact = false }) {
             : `🔗 ${(() => { try { return new URL(recipe.source_url).hostname.replace(/^www\./, ""); } catch { return "link"; } })()}`}
         </div>
       )}
-	{(recipe.tags || []).includes("vegetarian") && (
+	{/* Suppressed when interactive: vegetarian shows as a pill in the tag row */}
+	{!interactive && (recipe.tags || []).includes("vegetarian") && (
           <div style={{ position:"absolute", top: recipe.in_queue ? 52 : 30, right:10,
             fontSize:"10px", color:"#7ac87a",
             background:"rgba(122,200,122,0.1)",
@@ -56,8 +97,9 @@ function RecipeCard({ recipe, onSwap, compact = false }) {
         )}
       <div style={{ fontFamily:"'Playfair Display', Georgia, serif",
         fontSize: compact ? "14px" : "16px", fontWeight:"700",
-        color:"#f5ede0", marginBottom:"5px", paddingRight:"40px" }}>
-        {recipe.name}
+        color:"#f5ede0", marginBottom:"5px", paddingRight:"40px",
+        lineHeight:"1.3", textWrap:"balance" }}>
+        {query ? <Highlight text={recipe.name} query={query} /> : recipe.name}
       </div>
       {!compact && (
         <div style={{ fontSize:"12px", color:"#a08060", lineHeight:"1.6",
@@ -71,13 +113,26 @@ function RecipeCard({ recipe, onSwap, compact = false }) {
         {recipe.servings && (
           <span style={{ fontSize:"11px", color:"#806040" }}>👥 {recipe.servings}</span>
         )}
-        {(recipe.tags || []).slice(0,2).map(t => (
-          <span key={t} style={{ fontSize:"10px", color:"#c8a87a",
-            background:"rgba(200,168,122,0.1)", padding:"2px 8px",
-            borderRadius:"20px", border:"1px solid rgba(200,168,122,0.15)" }}>
-            {t}
-          </span>
-        ))}
+        {interactive ? (
+          <>
+            {/* meal type reads as a tag, not a section heading */}
+            <TagPill label={recipe.meal_type} kind="meal"
+              on={isOn(recipe.meal_type, "meal")}
+              onClick={() => onTag(recipe.meal_type, "meal")} />
+            {(recipe.tags || []).map(t => (
+              <TagPill key={t} label={t} kind={t === "vegetarian" ? "veg" : "tag"}
+                on={isOn(t, "tag")} onClick={() => onTag(t, "tag")} />
+            ))}
+          </>
+        ) : (
+          (recipe.tags || []).slice(0,2).map(t => (
+            <span key={t} style={{ fontSize:"10px", color:"#c8a87a",
+              background:"rgba(200,168,122,0.1)", padding:"2px 8px",
+              borderRadius:"20px", border:"1px solid rgba(200,168,122,0.15)" }}>
+              {t}
+            </span>
+          ))
+        )}
         {onSwap && (
           <button onClick={() => onSwap(recipe)} style={{
             marginLeft:"auto", fontSize:"11px",
@@ -87,6 +142,179 @@ function RecipeCard({ recipe, onSwap, compact = false }) {
           }}>swap ↕</button>
         )}
       </div>
+    </div>
+  );
+}
+
+function LibraryTab({ recipes }) {
+  const [query, setQuery] = useState("");
+  const [meals, setMeals] = useState([]);
+  const [tags, setTags]   = useState([]);
+  const [showRare, setShowRare] = useState(false);
+
+  // Defensive: schema.sql §6c now normalises tags on write, so this should be
+  // a no-op. Kept because it is one line and a mixed-case tag would otherwise
+  // render as two separate chips for the same thing.
+  const rows = useMemo(
+    () => recipes.map(r => ({
+      ...r, tags: [...new Set((r.tags || []).map(t => t.toLowerCase()))],
+    })),
+    [recipes]
+  );
+
+  const tagCount = useMemo(() => {
+    const c = {};
+    for (const r of rows) for (const t of r.tags) c[t] = (c[t] || 0) + 1;
+    return c;
+  }, [rows]);
+
+  // Tags used more than once get a chip; the long tail hides behind an
+  // expander so the bar stays scannable instead of becoming a wall.
+  const common = useMemo(() => Object.keys(tagCount)
+    .filter(t => tagCount[t] > 1)
+    .sort((a, b) => tagCount[b] - tagCount[a] || a.localeCompare(b)), [tagCount]);
+  const rare = useMemo(() => Object.keys(tagCount)
+    .filter(t => tagCount[t] === 1).sort(), [tagCount]);
+
+  // Meal types are OR'd, tags are AND'd. If everything were AND'd, selecting
+  // both lunch and dinner would return nothing, since no recipe is both.
+  const passes = (r, q, ms, ts) => {
+    if (q) {
+      // Name + tags only, deliberately not description — matching prose made
+      // "cold" return recipes whose description merely said "warm or cold".
+      const hay = `${r.name} ${r.tags.join(" ")} ${r.meal_type}`.toLowerCase();
+      if (!q.toLowerCase().split(/\s+/).filter(Boolean).every(w => hay.includes(w))) return false;
+    }
+    if (ms.length && !ms.includes(r.meal_type)) return false;
+    return ts.every(t => r.tags.includes(t));
+  };
+
+  const visible   = rows.filter(r => passes(r, query, meals, tags));
+  const filtering = !!query || meals.length > 0 || tags.length > 0;
+
+  const flip   = (list, v) => list.includes(v) ? list.filter(x => x !== v) : [...list, v];
+  const isOn   = (v, kind) => (kind === "meal" ? meals : tags).includes(v);
+  const onTag  = (v, kind) => kind === "meal" ? setMeals(flip(meals, v)) : setTags(flip(tags, v));
+  const reset  = () => { setQuery(""); setMeals([]); setTags([]); };
+
+  // The number on a chip is what you'd get if you toggled it — so a chip
+  // reading 0 is a dead end, and gets disabled rather than letting you
+  // click your way to an empty list.
+  const wouldGive = (v, kind) => rows.filter(r => passes(
+    r, query,
+    kind === "meal" ? flip(meals, v) : meals,
+    kind === "tag"  ? flip(tags,  v) : tags,
+  )).length;
+
+  const Chip = ({ value, kind }) => {
+    const on = isOn(value, kind);
+    const n = wouldGive(value, kind);
+    const dead = !on && n === 0;
+    const accent = kind === "meal" ? "#f5ede0" : value === "vegetarian" ? "#7ac87a" : "#c8a87a";
+    return (
+      <button onClick={() => onTag(value, kind)} disabled={dead} aria-pressed={on}
+        style={{
+          display:"inline-flex", alignItems:"baseline", gap:"6px",
+          padding:"5px 11px", borderRadius:"20px",
+          cursor: dead ? "not-allowed" : "pointer",
+          opacity: dead ? 0.28 : 1,
+          fontFamily:"'Crimson Pro',Georgia,serif", fontSize:"12px",
+          fontWeight: on ? "600" : "400",
+          color: on ? "#1c1206" : "#a08060",
+          background: on ? accent : "transparent",
+          border: `1px solid ${on ? accent : "rgba(200,168,122,0.18)"}`,
+          transition:"all 0.15s",
+        }}>
+        {value}
+        <span style={{ fontSize:"10px", fontVariantNumeric:"tabular-nums",
+          color: on ? "rgba(28,18,6,0.55)" : "#5a4030" }}>{n}</span>
+      </button>
+    );
+  };
+
+  const linkBtn = {
+    background:"none", border:"none", padding:"5px 4px", cursor:"pointer",
+    fontFamily:"'Crimson Pro',Georgia,serif", fontSize:"12px", color:"#806040",
+    textDecoration:"underline", textUnderlineOffset:"3px",
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily:"'Playfair Display',Georgia,serif",
+        fontSize:"22px", color:"#f5ede0", marginBottom:"6px" }}>
+        Recipe Library
+      </h2>
+      <p style={{ fontSize:"13px", color:"#806040", marginBottom:"4px" }}>
+        Search by name or tag. Add new recipes from the Queue tab.
+      </p>
+
+      {/* Sticky, so the filters stay reachable while scrolling a long list */}
+      <div style={{ position:"sticky", top:0, zIndex:5, background:"#120d07",
+        padding:"16px 0 12px", borderBottom:"1px solid rgba(200,168,122,0.1)",
+        display:"flex", flexDirection:"column", gap:"12px" }}>
+
+        <div style={{ position:"relative", display:"flex", alignItems:"center" }}>
+          <span style={{ position:"absolute", left:14, fontSize:"13px",
+            color:"#806040", pointerEvents:"none" }}>⌕</span>
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search recipes and tags…"
+            aria-label="Search recipes"
+            style={{ width:"100%", padding:"12px 38px", borderRadius:"8px",
+              background:"rgba(255,252,245,0.04)",
+              border:"1px solid rgba(200,168,122,0.25)",
+              fontFamily:"'Crimson Pro',Georgia,serif", fontSize:"15px",
+              color:"#f5ede0", outline:"none" }}
+          />
+          {query && (
+            <button onClick={() => setQuery("")} aria-label="Clear search"
+              style={{ position:"absolute", right:10, background:"none",
+                border:"none", cursor:"pointer", color:"#806040",
+                fontSize:"15px", fontFamily:"'Crimson Pro',Georgia,serif" }}>×</button>
+          )}
+        </div>
+
+        <div style={{ display:"flex", flexWrap:"wrap", gap:"6px", alignItems:"center" }}>
+          {["lunch","dinner"].map(m => <Chip key={m} value={m} kind="meal" />)}
+          <span style={{ width:"1px", alignSelf:"stretch", margin:"2px 5px",
+            background:"rgba(200,168,122,0.2)" }} />
+          {common.map(t => <Chip key={t} value={t} kind="tag" />)}
+          {showRare && rare.map(t => <Chip key={t} value={t} kind="tag" />)}
+          {rare.length > 0 && (
+            <button onClick={() => setShowRare(!showRare)} style={linkBtn}>
+              {showRare ? "fewer tags" : `+${rare.length} more tags`}
+            </button>
+          )}
+        </div>
+
+        <div style={{ display:"flex", justifyContent:"space-between",
+          alignItems:"baseline", fontSize:"12px", color:"#806040" }}>
+          <span>
+            <b style={{ color:"#f5ede0", fontWeight:"500",
+              fontVariantNumeric:"tabular-nums" }}>{visible.length}</b>
+            {filtering ? ` of ${rows.length} recipes` : " recipes"}
+          </span>
+          {filtering && (
+            <button onClick={reset} style={{ ...linkBtn, padding:0 }}>clear filters</button>
+          )}
+        </div>
+      </div>
+
+      {visible.length === 0 ? (
+        <EmptyState>
+          Nothing matches {[query, ...meals, ...tags].filter(Boolean).join(" · ")}.
+          <br />Try dropping a tag, or add the recipe from the Queue tab.
+        </EmptyState>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:"8px",
+          padding:"16px 0 40px" }}>
+          {visible.map(r => (
+            <RecipeCard key={r.id} recipe={r} compact
+              onTag={onTag} isOn={isOn} query={query} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -600,31 +828,7 @@ export default function MiseEnPlace() {
             loading ? (
               <EmptyState>Loading recipes…</EmptyState>
             ) : (
-            <div>
-              <h2 style={{ fontFamily:"'Playfair Display',Georgia,serif",
-                fontSize:"22px", color:"#f5ede0", marginBottom:"6px" }}>
-                Recipe Library
-              </h2>
-              <p style={{ fontSize:"13px", color:"#806040", marginBottom:"20px" }}>
-                All {allRecipes.length} recipes. Paste or share an Instagram link or
-                recipe name in the Queue tab to add new ones.
-              </p>
-
-              {["lunch","dinner"].map(type => (
-                <div key={type} style={{ marginBottom:"28px" }}>
-                  <div style={{ fontSize:"11px", color:"#806040",
-                    letterSpacing:"0.12em", textTransform:"uppercase",
-                    marginBottom:"12px" }}>
-                    {type === "lunch" ? "🥗 Lunches" : "🍽️ Dinners"}
-                  </div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-                    {allRecipes.filter(r => r.meal_type === type).map(r => (
-                      <RecipeCard key={r.id} recipe={r} compact />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+              <LibraryTab recipes={allRecipes} />
             )
           )}
 
