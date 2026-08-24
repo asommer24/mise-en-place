@@ -39,16 +39,30 @@ def parse_json_response(response, max_tokens: int):
     return json.loads(_FENCE.sub("", response_text(response)))
 
 
-def ask_json(system: str, user: str, max_tokens: int = 2000):
+def ask_json(system: str, user: str, max_tokens: int = 32_000):
     """
     Call Claude and parse the reply as JSON. Raises on unparseable output —
     callers decide whether that is fatal.
+
+    Streamed, and with one generous cap for every caller, because of two
+    things measured the hard way:
+
+      - Thinking tokens dominate. A real Sunday consolidation (113 ingredient
+        lines) spent 14.5k output tokens, only ~4k of which was the JSON.
+        Per-call-site budgets were all guesses, and all too low.
+      - Non-streaming requests are capped near 21k max_tokens by the SDK
+        (it refuses anything it estimates could run past 10 minutes), which
+        left almost no headroom. Streaming removes that ceiling.
+
+    A high cap is not a high cost — you pay for tokens generated, not for the
+    ceiling. It is a backstop, not a budget.
     """
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    response = client.messages.create(
+    with client.messages.stream(
         model=MODEL,
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
     return parse_json_response(response, max_tokens)

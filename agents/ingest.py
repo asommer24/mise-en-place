@@ -121,7 +121,7 @@ def extract_recipe_from_text(content: str, source_url: str = "") -> tuple[dict |
     prompt = f"Source URL: {source_url}\n\nContent:\n{content[:6000]}"
 
     try:
-        result = ask_json(RECIPE_EXTRACT_PROMPT, prompt, max_tokens=4000)
+        result = ask_json(RECIPE_EXTRACT_PROMPT, prompt)
         if "error" in result:
             detail = f"Claude: {result['error']} (content was {len(content)} chars)"
             logger.warning("Recipe extraction returned error for %s: %s", source_url, detail)

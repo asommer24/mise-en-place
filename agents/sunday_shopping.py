@@ -131,8 +131,7 @@ def aggregate_ingredients(recipes: list[dict]) -> list[dict]:
 def consolidate_with_claude(raw_ingredients: list[dict]) -> list[dict]:
     user_msg = f"Raw ingredients:\n{json.dumps(raw_ingredients, indent=2)}"
 
-    # ~60 ingredient lines in, a categorised array out, plus thinking tokens.
-    consolidated = ask_json(CONSOLIDATION_PROMPT, user_msg, max_tokens=8000)
+    consolidated = ask_json(CONSOLIDATION_PROMPT, user_msg)
     logger.info("Consolidated to %d shopping list items", len(consolidated))
     return consolidated
 

@@ -151,7 +151,7 @@ def select_recipes_with_claude(recipes: dict) -> dict:
 
     user_msg = f"Available recipes:\n{json.dumps(all_recipes, indent=2)}"
 
-    result = ask_json(SELECTION_PROMPT, user_msg, max_tokens=2000)
+    result = ask_json(SELECTION_PROMPT, user_msg)
     validate_selection(result,
                        {r["id"] for r in recipes["lunches"]},
                        {r["id"] for r in recipes["dinners"]})
