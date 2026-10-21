@@ -1,3 +1,5 @@
-1. Debug and test locally 
-2. Add support for tracking wish list of restaurants
-3. Add "cooked" to the DB so we can track / review recipes. 
+1. Re-work the full list ; set # of guests, and then plan for leftovers 
+2. Add calendar view for this week ; with an assignment per night 
+3. Test multiple user function 
+4. Add support for tracking wish list of restaurants
+5. Add "cooked" to the DB so we can track / review recipes. 
