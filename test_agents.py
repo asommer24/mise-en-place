@@ -14,7 +14,8 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 
 from agents.claude import parse_json_response, response_text
-from agents.saturday_suggest import plan_monday, validate_selection
+from agents.saturday_suggest import (pick_fallback, plan_monday, servings, targets,
+                                    validate_selection)
 
 
 def block(text=None, thinking=None):
@@ -81,31 +82,60 @@ def test_truncation_is_named():
 
 def test_validate_selection():
     """
-    Claude's ids are untrusted. An invented id would be written into
-    weekly_plans.lunches and then match nothing downstream.
+    Claude's ids are untrusted: an invented id would be written into
+    weekly_plans.lunches and match nothing downstream. Beyond that, each list
+    must cover its servings target with no spare recipe. Recipes with no
+    serving size count as 4.
     """
-    lunches = {f"L{i}" for i in range(6)}
-    dinners = {f"D{i}" for i in range(4)}
-    good = {"lunch_ids": ["L0", "L1", "L2", "L3", "L4"],
-            "dinner_ids": ["D0", "D1", "D2"]}
-    validate_selection(good, lunches, dinners)   # must not raise
+    lunches = {f"L{i}": {"id": f"L{i}", "servings": 4} for i in range(6)}
+    lunches["L5"] = {"id": "L5"}                  # no serving size -> 4
+    lunches["Lbig"] = {"id": "Lbig", "servings": 8}
+    dinners = {f"D{i}": {"id": f"D{i}", "servings": 4} for i in range(4)}
+    # 5 lunches + 3 dinners, 2 people: 10 lunch servings, 6 dinner servings
+    lunch_target, dinner_target = 10, 6
+    good = {"lunch_ids": ["L0", "L1", "L2"], "dinner_ids": ["D0", "D1"]}
+
+    def check(case, lt=lunch_target, dt=dinner_target):
+        validate_selection(case, lunches, dinners, lt, dt)
+
+    check(good)                                                  # 12 and 8
+    check({**good, "lunch_ids": ["L5", "L0", "L1"]})             # default of 4
+    check({**good, "lunch_ids": ["Lbig", "L0"]})                 # 12 from two
+    check({"lunch_ids": [], "dinner_ids": []}, 0, 0)             # nothing to eat
+    check({"lunch_ids": ["L0"]}, 4, 0)                           # key missing, target 0
 
     bad_cases = [
-        {**good, "lunch_ids": ["L0", "L1", "L2", "L3"]},              # too few
-        {**good, "lunch_ids": ["L0", "L1", "L2", "L3", "L4", "L5"]},  # too many
-        {**good, "lunch_ids": ["L0", "L0", "L1", "L2", "L3"]},        # duplicate
-        {**good, "lunch_ids": ["L0", "L1", "L2", "L3", "nope"]},      # invented
-        {**good, "dinner_ids": ["D0", "D1", "L0"]},                   # wrong pool
-        {**good, "dinner_ids": []},                                   # empty
-        {"lunch_ids": good["lunch_ids"]},                             # key missing
+        {**good, "lunch_ids": ["L0", "L1"]},                     # 8 < 10: short
+        {**good, "lunch_ids": ["L0", "L1", "L2", "L3"]},         # 16: L3 is spare
+        {**good, "lunch_ids": ["L0", "L0", "L1"]},               # duplicate
+        {**good, "lunch_ids": ["L0", "L1", "nope"]},             # invented
+        {**good, "dinner_ids": ["D0", "L0"]},                    # wrong pool
+        {**good, "dinner_ids": []},                              # empty, target 6
+        {"lunch_ids": good["lunch_ids"]},                        # key missing
     ]
     for case in bad_cases:
         try:
-            validate_selection(case, lunches, dinners)
+            check(case)
         except RuntimeError:
             pass
         else:
             raise AssertionError(f"expected rejection: {case}")
+
+
+def test_servings_targets_and_fallback():
+    """The formula is (lunches + dinners) * people, covered per meal type."""
+    s = {"lunches": 5, "dinners": 3, "people": 2}
+    assert targets(s) == (10, 6)
+    assert sum(targets(s)) == (5 + 3) * 2
+    assert servings({}) == 4 and servings({"servings": None}) == 4
+    assert servings({"servings": 6}) == 6
+
+    pool = [{"id": "a", "servings": 4, "times_suggested": 3},
+            {"id": "b", "servings": 4, "times_suggested": 0},
+            {"id": "c", "servings": 4, "times_suggested": 1, "in_queue": True}]
+    assert pick_fallback(pool, 10) == ["c", "b", "a"]    # queue, then least-used
+    assert pick_fallback(pool, 4) == ["c"]
+    assert pick_fallback(pool, 0) == []
 
 
 def test_week_label_is_portable():

@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from supabase import create_client
 
 from agents.claude import ask_json
@@ -346,21 +346,30 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
     raise HTTPException(status_code=400, detail="Provide either 'url' or 'name'")
 
 
+class PlanSettings(BaseModel):
+    # Bounds match the CHECK constraints on meal_settings in scripts/schema.sql.
+    lunches: int = Field(ge=0, le=14)
+    dinners: int = Field(ge=0, le=14)
+    people: int = Field(ge=1, le=8)
+
+
 @app.post("/trigger/saturday-suggest")
 def trigger_saturday_suggest(
     background_tasks: BackgroundTasks,
+    settings: PlanSettings | None = None,
     x_ingest_token: str | None = Header(default=None),
 ):
-    """Trigger the Saturday meal-selection agent on demand."""
+    """Trigger the Saturday meal-selection agent on demand. An optional body
+    overrides the saved defaults for this run only."""
     require_token(x_ingest_token)
-    background_tasks.add_task(_run_saturday)
+    background_tasks.add_task(_run_saturday, settings.model_dump() if settings else None)
     return {"ok": True, "message": "Meal plan generation started"}
 
 
-def _run_saturday() -> None:
+def _run_saturday(settings: dict | None = None) -> None:
     from agents.saturday_suggest import main as saturday_main
     try:
-        saturday_main()
+        saturday_main(settings)
     except Exception as exc:
         logger.error("saturday_suggest trigger failed: %s", exc)
 

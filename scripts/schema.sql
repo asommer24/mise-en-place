@@ -238,6 +238,45 @@ WHERE EXISTS (
 
 
 -- ---------------------------------------------------------------------------
+-- 6d. Weekly defaults + per-plan settings
+--
+--     meal_settings holds the household defaults (one row, id = 1): lunches
+--     and dinners per week, and how many people eat them. The week needs
+--     (lunches + dinners) * people servings. The Saturday cron and the web
+--     app's Generate dialog start from these.
+--
+--     weekly_plans.settings records the values a plan was generated with, so
+--     a one-off change in the Generate dialog stays with that week and
+--     regenerating it reopens on the same numbers. Re-runnable.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS meal_settings (
+    id          INTEGER     PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    lunches     INTEGER     NOT NULL DEFAULT 5 CHECK (lunches BETWEEN 0 AND 14),
+    dinners     INTEGER     NOT NULL DEFAULT 3 CHECK (dinners BETWEEN 0 AND 14),
+    people      INTEGER     NOT NULL DEFAULT 2 CHECK (people  BETWEEN 1 AND 8),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+INSERT INTO meal_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+ALTER TABLE meal_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read settings"   ON meal_settings;
+DROP POLICY IF EXISTS "Public update settings" ON meal_settings;
+DROP POLICY IF EXISTS "Service role all settings" ON meal_settings;
+CREATE POLICY "Public read settings"   ON meal_settings FOR SELECT USING (true);
+-- Same trade-off as weekly_plans: the anon key is public, and for a private
+-- 2-person app the worst a stranger can do is change three small numbers.
+CREATE POLICY "Public update settings" ON meal_settings FOR UPDATE USING (true) WITH CHECK (true);
+CREATE POLICY "Service role all settings" ON meal_settings FOR ALL USING (auth.role() = 'service_role');
+
+CREATE OR REPLACE TRIGGER trg_settings_updated_at
+    BEFORE UPDATE ON meal_settings
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE weekly_plans ADD COLUMN IF NOT EXISTS settings JSONB;
+
+
+-- ---------------------------------------------------------------------------
 -- 7. Seed a few starter recipes so the app isn't empty
 --
 --    NOTE: the ON CONFLICT DO NOTHING below is a no-op — there is no unique

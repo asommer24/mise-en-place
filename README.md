@@ -1,7 +1,7 @@
 # 🍽️ Mise en Place — Automated Weekly Meal Planner
 
-Picks 5 make-ahead lunches + 3 vegetarian dinners every Saturday and shows them
-on a web app where either of you can swap recipes, then builds a categorized
+Picks make-ahead lunches + vegetarian dinners every Saturday, enough servings
+for the week, and shows them on a web app where either of you can swap recipes, then builds a categorized
 shopping list in Todoist Sunday morning.
 
 Add recipes by sending an Instagram link to the ingest endpoint — paste it in
@@ -17,7 +17,8 @@ then queued and prioritized for the next week's plan.
 Anytime         →  Paste/share an Instagram link → recipe parsed → added to queue
                 →  Or type a recipe name        → stub added to queue
 
-Saturday 9 AM   →  Claude picks 5 lunches + 3 vegetarian dinners from library + queue
+Saturday 9 AM   →  Claude picks lunches + vegetarian dinners from library + queue
+                   to cover the week's servings (see below)
                 →  Plan appears on the web app
                 →  Either user can swap any recipe on the web app
 
@@ -34,8 +35,19 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 > submitted per-post (one tap from the share sheet) instead.
 
 > **Dinners are vegetarian-only.** The Saturday agent filters the dinner pool to
-> recipes tagged `vegetarian` (`tags` array in Supabase). Tag at least 3 dinner
-> recipes `vegetarian` or the Saturday job will exit with "Not enough recipes."
+> recipes tagged `vegetarian` (`tags` array in Supabase). Tag enough dinner
+> recipes `vegetarian` to cover the dinner servings or the Saturday job will exit
+> with "Not enough dinners."
+
+> **Servings, not recipe counts.** The **Settings** tab holds three defaults:
+> lunches per week, dinners per week and people. The week needs
+> `(lunches + dinners) × people` servings (default 5 / 3 / 2 = 16), with lunches
+> and dinners covered separately. Each recipe's `servings` counts toward its
+> target (4 if unset), whole recipes only, so the extra servings are leftovers.
+> **Generate** and **regenerate** open a dialog where those numbers can be
+> changed for that week only; they are stored on the plan
+> (`weekly_plans.settings`), never on the defaults. The Saturday cron always
+> uses the saved defaults.
 
 ---
 
@@ -51,7 +63,9 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 **Already set up?** Re-run sections **6b** and **7b** of `schema.sql` — 6b adds
 the `increment_times_suggested` function (previously called but never defined,
 so `times_suggested` never incremented) and 7b tops the library up to 6 lunches
-and 4 vegetarian dinners. Both are safely re-runnable. Do *not* re-run section 7
+and 4 vegetarian dinners. Also run **6d** (the `meal_settings` defaults table and
+`weekly_plans.settings`); the app falls back to 5 / 3 / 2 without it, but the
+Settings tab can't save. All three are safely re-runnable. Do *not* re-run section 7
 — it has no unique constraint to conflict on, so it duplicates its recipes.
 
 ### 2. Todoist

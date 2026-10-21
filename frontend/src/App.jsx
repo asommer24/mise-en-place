@@ -495,6 +495,251 @@ function SwapModal({ recipe, allRecipes, onConfirm, onClose }) {
   );
 }
 
+// ─── Weekly servings: lunches / dinners / people ────────────────────────────
+
+// Keep in sync with DEFAULT_SETTINGS in agents/saturday_suggest.py.
+const DEFAULT_SETTINGS = { lunches: 5, dinners: 3, people: 2 };
+const SETTING_FIELDS = [
+  { key:"lunches", label:"Lunches per week", chip:"lunches", hint:"Make-ahead, eaten Mon–Fri", min:0, max:14 },
+  { key:"dinners", label:"Dinners per week", chip:"dinners", hint:"Cooked fresh, vegetarian",  min:0, max:14 },
+  { key:"people",  label:"People eating",    chip:"people",  hint:"Everyone sharing these meals", min:1, max:8 },
+];
+const BUTTON_FONT = "'Crimson Pro',Georgia,serif";
+
+// Recipes saved without a serving size count as 4 (same as the agent).
+const servingsOf = r => r.servings || 4;
+const totalServings = recipes => recipes.reduce((n, r) => n + servingsOf(r), 0);
+const servingsNeeded = s => ({
+  lunch: s.lunches * s.people,
+  dinner: s.dinners * s.people,
+  total: (s.lunches + s.dinners) * s.people,
+});
+const settingsLabel = s => `${s.lunches} · ${s.dinners} · ${s.people}`;
+
+function Stepper({ field, value, onChange }) {
+  const step = (delta, label) => {
+    const next = value + delta;
+    const off = next < field.min || next > field.max;
+    return (
+      <button aria-label={`${label} ${field.chip}`} disabled={off}
+        onClick={() => onChange(next)} style={{
+          width:"44px", height:"44px", borderRadius:"10px", fontSize:"22px", lineHeight:1,
+          border:"1px solid rgba(200,168,122,0.3)", background:"rgba(200,168,122,0.08)",
+          color:"#c8a87a", fontFamily:BUTTON_FONT,
+          cursor: off ? "default" : "pointer", opacity: off ? 0.35 : 1,
+        }}>{delta < 0 ? "−" : "+"}</button>
+    );
+  };
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:"6px", flexShrink:0 }}>
+      {step(-1, "Fewer")}
+      <div style={{ width:"44px", textAlign:"center", fontSize:"24px", fontWeight:"700",
+        fontFamily:"'Playfair Display',Georgia,serif", color:"#f5ede0" }}>{value}</div>
+      {step(1, "More")}
+    </div>
+  );
+}
+
+function SettingsTab({ defaults, onSaved }) {
+  const [draft, setDraft] = useState(defaults);
+  const [status, setStatus] = useState("");
+  const need = servingsNeeded(draft);
+
+  const save = async () => {
+    setStatus("Saving…");
+    const { error } = await supabase.from("meal_settings").update(draft).eq("id", 1);
+    if (error) { setStatus(`Couldn't save: ${error.message}`); return; }
+    onSaved(draft);
+    setStatus("Saved");
+    setTimeout(() => setStatus(""), 2500);
+  };
+
+  const block = { borderTop:"1px solid rgba(200,168,122,0.18)", paddingTop:"12px" };
+  return (
+    <div style={{ paddingBottom:"40px" }}>
+      <h2 style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:"20px",
+        color:"#f5ede0", marginBottom:"4px" }}>Weekly defaults</h2>
+      <p style={{ fontSize:"15px", lineHeight:"1.5", color:"#a08560", marginBottom:"16px" }}>
+        Saturday's plan and the Generate button both use these. Change them any
+        time; the current plan isn't touched until you regenerate.
+      </p>
+
+      <div style={{ display:"flex", flexDirection:"column", gap:"10px", marginBottom:"24px" }}>
+        {SETTING_FIELDS.map(f => (
+          <div key={f.key} style={{
+            display:"flex", alignItems:"center", justifyContent:"space-between", gap:"16px",
+            background:"#1c140c", border:"1px solid rgba(200,168,122,0.18)",
+            borderRadius:"12px", padding:"14px 18px" }}>
+            <div>
+              <div style={{ fontSize:"17px", fontWeight:"500", color:"#f5ede0" }}>{f.label}</div>
+              <div style={{ fontSize:"14px", color:"#a08560", marginTop:"2px" }}>{f.hint}</div>
+            </div>
+            <Stepper field={f} value={draft[f.key]}
+              onChange={v => setDraft(d => ({ ...d, [f.key]: v }))} />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ background:"rgba(200,168,122,0.06)", border:"1px solid rgba(200,168,122,0.25)",
+        borderRadius:"14px", padding:"20px 22px", marginBottom:"16px" }}>
+        <div style={{ fontSize:"11px", letterSpacing:"0.16em", textTransform:"uppercase",
+          color:"#a08560", marginBottom:"10px" }}>Servings to plan each week</div>
+        <div style={{ display:"flex", alignItems:"baseline", gap:"14px", flexWrap:"wrap" }}>
+          <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:"44px",
+            fontWeight:"700", color:"#f5ede0", lineHeight:1 }}>{need.total}</div>
+          <div style={{ fontSize:"16px" }}>
+            ({draft.lunches} lunches + {draft.dinners} dinners) × {draft.people} people
+          </div>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))",
+          gap:"12px", marginTop:"18px" }}>
+          {[["Lunches", need.lunch], ["Dinners", need.dinner]].map(([name, n]) => (
+            <div key={name} style={block}>
+              <div style={{ fontSize:"14px", color:"#a08560" }}>{name}</div>
+              <div style={{ fontSize:"18px", color:"#f5ede0", fontWeight:"500" }}>{n} servings</div>
+              <div style={{ fontSize:"14px" }}>about {Math.ceil(n / 4)} recipes</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <p style={{ fontSize:"14px", lineHeight:"1.55", color:"#a08560", marginBottom:"24px" }}>
+        Recipe counts assume 4 servings each, the default for any recipe without a
+        serving size. Whole recipes only, so a plan usually lands a little over, and
+        the extra servings are your leftovers.
+      </p>
+
+      <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+        <button onClick={save} style={{
+          flex:1, height:"48px", borderRadius:"10px", border:"none", background:"#c8a87a",
+          color:"#120d07", fontSize:"16px", fontWeight:"600", cursor:"pointer",
+          fontFamily:BUTTON_FONT }}>Save defaults</button>
+        <button onClick={() => setDraft(DEFAULT_SETTINGS)} style={{
+          height:"48px", padding:"0 20px", borderRadius:"10px", background:"transparent",
+          border:"1px solid rgba(200,168,122,0.3)", color:"#c8a87a", fontSize:"15px",
+          cursor:"pointer", fontFamily:BUTTON_FONT }}>
+          Reset to {settingsLabel(DEFAULT_SETTINGS)}
+        </button>
+      </div>
+      {status && <div style={{ fontSize:"14px", color:"#a08560", marginTop:"12px" }}>{status}</div>}
+    </div>
+  );
+}
+
+// Opened by Generate / regenerate. The numbers are a one-off for this week —
+// the backend stores them on the plan, never on the saved defaults.
+function GenerateModal({ initial, defaults, weekLabel, generating, status, onGenerate, onClose }) {
+  const [draft, setDraft] = useState(initial);
+  const need = servingsNeeded(draft);
+  const isDefault = SETTING_FIELDS.every(f => draft[f.key] === defaults[f.key]);
+  const ghost = {
+    height:"48px", padding:"0 20px", borderRadius:"10px", background:"transparent",
+    border:"1px solid rgba(200,168,122,0.3)", color:"#c8a87a", fontSize:"15px",
+    cursor:"pointer", fontFamily:BUTTON_FONT,
+  };
+  const primaryOff = generating || need.total === 0;
+
+  return (
+    <div style={{
+      position:"fixed", inset:0, background:"rgba(8,5,2,0.72)", zIndex:100,
+      display:"flex", alignItems:"center", justifyContent:"center", padding:"24px",
+    }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="gen-title" style={{
+        width:"100%", maxWidth:"480px", maxHeight:"100%", overflowY:"auto",
+        background:"#1c140c", border:"1px solid rgba(200,168,122,0.3)", borderRadius:"16px",
+        padding:"28px 28px 24px", boxShadow:"0 24px 60px rgba(0,0,0,0.55)",
+      }}>
+        <div style={{ fontSize:"11px", letterSpacing:"0.16em", textTransform:"uppercase",
+          color:"#a08560", marginBottom:"8px" }}>{generating ? "Generating" : weekLabel}</div>
+        <h2 id="gen-title" style={{ fontFamily:"'Playfair Display',Georgia,serif",
+          fontSize:"26px", fontWeight:"700", color:"#f5ede0", lineHeight:"1.15",
+          margin:"0 0 6px" }}>
+          {generating ? "Planning your week" : "Plan this week"}
+        </h2>
+        <p style={{ fontSize:"15px", lineHeight:"1.5", color:"#a08560", margin:"0 0 16px" }}>
+          {generating ? weekLabel : "Adjust for this week only. Your defaults in Settings don't change."}
+        </p>
+
+        {generating ? (
+          <div style={{ display:"flex", gap:"8px", marginBottom:"14px" }}>
+            {SETTING_FIELDS.map(f => (
+              <div key={f.key} style={{ flex:1, textAlign:"center", padding:"10px 12px",
+                border:"1px solid rgba(200,168,122,0.2)", borderRadius:"10px" }}>
+                <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:"24px",
+                  fontWeight:"700", color:"#f5ede0", lineHeight:"1.1" }}>{draft[f.key]}</div>
+                <div style={{ fontSize:"13px", color:"#a08560" }}>{f.chip}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ marginBottom:"16px", borderTop:"1px solid rgba(200,168,122,0.15)" }}>
+            {SETTING_FIELDS.map(f => (
+              <div key={f.key} style={{ display:"flex", alignItems:"center",
+                justifyContent:"space-between", gap:"16px", padding:"10px 0",
+                borderBottom:"1px solid rgba(200,168,122,0.15)" }}>
+                <div style={{ fontSize:"17px", fontWeight:"500", color:"#f5ede0",
+                  textTransform:"capitalize" }}>{f.chip}</div>
+                <Stepper field={f} value={draft[f.key]}
+                  onChange={v => setDraft(d => ({ ...d, [f.key]: v }))} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ background:"rgba(200,168,122,0.06)", borderRadius:"10px",
+          padding:"14px 16px", marginBottom: generating ? "20px" : "12px" }}>
+          <div style={{ fontSize:"16px", color:"#f5ede0", fontWeight:"500" }}>
+            ({draft.lunches} + {draft.dinners}) × {draft.people} = {need.total} servings to cover
+          </div>
+          <div style={{ fontSize:"14px", color:"#a08560", marginTop:"4px" }}>
+            {need.lunch} for lunches · {need.dinner} for dinners · recipes with no serving size count as 4
+          </div>
+        </div>
+
+        {generating ? (
+          <>
+            <div role="progressbar" aria-label="Generating plan" style={{ position:"relative",
+              height:"6px", borderRadius:"3px", background:"rgba(200,168,122,0.15)",
+              overflow:"hidden", marginBottom:"10px" }}>
+              <div style={{ position:"absolute", top:0, left:0, height:"100%", width:"40%",
+                borderRadius:"3px", background:"#c8a87a",
+                animation:"miseSlide 1.4s ease-in-out infinite" }} />
+            </div>
+            <div style={{ fontSize:"14px", marginBottom:"22px" }}>
+              Choosing whole recipes that cover your servings. Usually 10 to 20 seconds.
+            </div>
+          </>
+        ) : (
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+            gap:"12px", marginBottom:"22px", minHeight:"32px" }}>
+            <div style={{ fontSize:"14px", color:"#a08560" }}>
+              {status || (isDefault
+                ? `Using your defaults (${settingsLabel(defaults)}).`
+                : `This week only. Defaults stay ${settingsLabel(defaults)}.`)}
+            </div>
+            <button disabled={isDefault} onClick={() => setDraft(defaults)} style={{
+              height:"32px", padding:"0 12px", borderRadius:"8px", background:"transparent",
+              border:"1px solid rgba(200,168,122,0.3)", color:"#c8a87a", fontSize:"14px",
+              fontFamily:BUTTON_FONT, flexShrink:0,
+              cursor: isDefault ? "default" : "pointer", opacity: isDefault ? 0.35 : 1,
+            }}>Use defaults</button>
+          </div>
+        )}
+
+        <div style={{ display:"flex", justifyContent:"flex-end", gap:"10px" }}>
+          <button onClick={onClose} style={ghost}>{generating ? "Hide, keep working" : "Cancel"}</button>
+          <button disabled={primaryOff} onClick={() => onGenerate(draft)} style={{
+            height:"48px", padding:"0 24px", borderRadius:"10px", border:"none",
+            background:"#c8a87a", color:"#120d07", fontSize:"16px", fontWeight:"600",
+            fontFamily:BUTTON_FONT, cursor: primaryOff ? "default" : "pointer",
+            opacity: primaryOff ? 0.45 : 1,
+          }}>{generating ? "Generating…" : "Generate plan"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ───────────────────────────────────────────────────────────────
 
 export default function MiseEnPlace() {
@@ -509,6 +754,8 @@ export default function MiseEnPlace() {
   const [queueFeedback, setQueueFeedback] = useState("");
   const [triggering, setTriggering] = useState(false);
   const [triggerStatus, setTriggerStatus] = useState("");
+  const [defaults, setDefaults] = useState(DEFAULT_SETTINGS);   // meal_settings row
+  const [modalOpen, setModalOpen] = useState(false);
   const triggerPollRef = useRef(null);
   const weekStart = planMonday();
 
@@ -522,11 +769,14 @@ export default function MiseEnPlace() {
 
   useEffect(() => {
     (async () => {
-      const [{ data: recipes }, { data: p }] = await Promise.all([
+      const [{ data: recipes }, { data: p }, { data: s }] = await Promise.all([
         supabase.from("recipes").select("*"),
         supabase.from("weekly_plans").select("*").eq("week_start", weekStart).maybeSingle(),
+        // Missing until schema.sql 6d is applied; the defaults stand in.
+        supabase.from("meal_settings").select("lunches,dinners,people").eq("id", 1).maybeSingle(),
       ]);
       setAllRecipes(recipes || []);
+      if (s) setDefaults(s);
       setPlan(p);
       setShoppingItems(p?.shopping_list || []);
       setLoading(false);
@@ -535,14 +785,25 @@ export default function MiseEnPlace() {
 
   useEffect(() => () => { if (triggerPollRef.current) clearInterval(triggerPollRef.current); }, []);
 
-  const handleTrigger = async () => {
+  const openModal = () => { setTriggerStatus(""); setModalOpen(true); };
+
+  // `settings` is this week's lunches/dinners/people from the Generate dialog.
+  const handleTrigger = async (settings) => {
     setTriggering(true);
     setTriggerStatus("Generating plan…");
+
+    const { data: before } = await supabase.from("weekly_plans")
+      .select("updated_at").eq("week_start", weekStart).maybeSingle();
+    const startUpdated = before?.updated_at ?? null;
 
     try {
       const resp = await fetch(`${import.meta.env.VITE_INGEST_URL}/trigger/saturday-suggest`, {
         method: "POST",
-        headers: { "X-Ingest-Token": import.meta.env.VITE_INGEST_TOKEN },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Ingest-Token": import.meta.env.VITE_INGEST_TOKEN,
+        },
+        body: JSON.stringify(settings),
       });
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({}));
@@ -556,9 +817,9 @@ export default function MiseEnPlace() {
       return;
     }
 
-    // Poll Supabase for a new weekly_plans row
-    // Regenerating upserts the same row (same id), so detect it by updated_at.
-    const startUpdated = plan?.updated_at ?? null;
+    // Poll until the row changes. Regenerating upserts the same row (same id),
+    // so compare updated_at, read from the DB: swaps, confirms and Clear bump it
+    // without touching the copy in state.
     let attempts = 0;
     triggerPollRef.current = setInterval(async () => {
       attempts++;
@@ -579,6 +840,7 @@ export default function MiseEnPlace() {
         setShoppingItems(latest.shopping_list || []);
         setTriggering(false);
         setTriggerStatus("");
+        setModalOpen(false);
       }
     }, 3000);
   };
@@ -643,6 +905,15 @@ export default function MiseEnPlace() {
 
   const queued = allRecipes.filter(r => r.in_queue);
   const hasPlan = !!(plan?.lunches?.length || plan?.dinners?.length);
+  // The settings the plan was generated with (null for plans from before this
+  // existed, or if schema.sql 6d isn't applied), live against the current picks.
+  const planSettings = hasPlan ? plan.settings : null;
+  const planned = totalServings([...lunches, ...dinners]);
+  const need = planSettings && servingsNeeded(planSettings).total;
+  const planSummary = !planSettings ? `${planned} servings planned`
+    : planned >= need
+      ? `${need} servings needed · ${planned} planned · ${planned - need} leftover`
+      : `${need} servings needed · ${planned} planned · ${need - planned} short`;
   const weekOf = formatWeek(weekStart, { month: "long", day: "numeric", year: "numeric" });
   const weekLabel = `Week of ${formatWeek(weekStart, { month: "short", day: "numeric" })}`;
 
@@ -655,6 +926,7 @@ export default function MiseEnPlace() {
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: rgba(200,168,122,0.2); border-radius: 2px; }
+        @keyframes miseSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
       `}</style>
 
       <div style={{
@@ -700,6 +972,7 @@ export default function MiseEnPlace() {
               { id:"shopping", label:"Shopping" },
               { id:"library",  label:"Library"  },
               { id:"queue",    label:`Queue (${queued.length})` },
+              { id:"settings", label:"Settings" },
             ].map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
                 padding:"14px 20px", background:"transparent", border:"none",
@@ -722,11 +995,11 @@ export default function MiseEnPlace() {
               <div style={{ textAlign:"center", padding:"60px 20px" }}>
                 <div style={{ color:"#5a4030", fontSize:"14px",
                   lineHeight:"1.6", marginBottom:"24px" }}>
-                  No plan yet. Saturday's cron picks 5 lunches + 3 dinners — or
-                  generate one now.
+                  No plan yet. Saturday's cron picks recipes to cover your weekly
+                  servings — or generate one now.
                 </div>
                 <button
-                  onClick={handleTrigger}
+                  onClick={openModal}
                   disabled={triggering}
                   style={{
                     padding:"12px 28px",
@@ -747,15 +1020,18 @@ export default function MiseEnPlace() {
               </div>
             ) : (
             <div>
+              <div style={{ fontSize:"14px", color:"#a08560", marginBottom:"20px" }}>
+                {planSummary}
+              </div>
               <div style={{ marginBottom:"28px" }}>
                 <div style={{ display:"flex", justifyContent:"space-between",
                   alignItems:"center", marginBottom:"14px" }}>
                   <h2 style={{ fontFamily:"'Playfair Display',Georgia,serif",
                     fontSize:"20px", color:"#f5ede0" }}>
-                    5 Meal-Prep Lunches
+                    Meal-Prep Lunches
                   </h2>
                   <span style={{ fontSize:"11px", color:"#5a4030" }}>
-                    prep Sunday · eat Mon–Fri
+                    {totalServings(lunches)} servings · prep Sunday · eat Mon–Fri
                   </span>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
@@ -770,10 +1046,10 @@ export default function MiseEnPlace() {
                   alignItems:"center", marginBottom:"14px" }}>
                   <h2 style={{ fontFamily:"'Playfair Display',Georgia,serif",
                     fontSize:"20px", color:"#f5ede0" }}>
-                    3 Dinners
+                    Dinners
                   </h2>
                   <span style={{ fontSize:"11px", color:"#5a4030" }}>
-                    cook fresh each night
+                    {totalServings(dinners)} servings · cook fresh each night
                   </span>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
@@ -796,7 +1072,7 @@ export default function MiseEnPlace() {
                   {saved ? "✓ Plan Confirmed" : "Confirm This Week's Plan"}
                 </button>
                 <button
-                  onClick={handleTrigger}
+                  onClick={openModal}
                   disabled={triggering}
                   title="Regenerate plan"
                   style={{
@@ -855,6 +1131,15 @@ export default function MiseEnPlace() {
               <EmptyState>Loading recipes…</EmptyState>
             ) : (
               <LibraryTab recipes={allRecipes} />
+            )
+          )}
+
+          {/* ── SETTINGS TAB ── */}
+          {tab === "settings" && (
+            loading ? (
+              <EmptyState>Loading…</EmptyState>
+            ) : (
+              <SettingsTab defaults={defaults} onSaved={setDefaults} />
             )
           )}
 
@@ -940,6 +1225,19 @@ export default function MiseEnPlace() {
           )}
         </div>
       </div>
+
+      {/* Generate dialog: remounts on open, so it starts from this week's values */}
+      {modalOpen && (
+        <GenerateModal
+          initial={planSettings || defaults}
+          defaults={defaults}
+          weekLabel={weekLabel}
+          generating={triggering}
+          status={triggerStatus}
+          onGenerate={handleTrigger}
+          onClose={() => setModalOpen(false)}
+        />
+      )}
 
       {/* Swap modal */}
       {swapTarget && (
