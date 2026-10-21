@@ -277,6 +277,17 @@ ALTER TABLE weekly_plans ADD COLUMN IF NOT EXISTS settings JSONB;
 
 
 -- ---------------------------------------------------------------------------
+-- 6e. Vegetarian toggles
+--     Limit lunches and/or dinners to recipes tagged 'vegetarian'. Dinners
+--     default on and lunches off, which is what the agent did before these
+--     existed. Re-runnable.
+-- ---------------------------------------------------------------------------
+ALTER TABLE meal_settings
+    ADD COLUMN IF NOT EXISTS vegetarian_lunches BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS vegetarian_dinners BOOLEAN NOT NULL DEFAULT true;
+
+
+-- ---------------------------------------------------------------------------
 -- 7. Seed a few starter recipes so the app isn't empty
 --
 --    NOTE: the ON CONFLICT DO NOTHING below is a no-op — there is no unique

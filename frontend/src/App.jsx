@@ -498,7 +498,21 @@ function SwapModal({ recipe, allRecipes, onConfirm, onClose }) {
 // ─── Weekly servings: lunches / dinners / people ────────────────────────────
 
 // Keep in sync with DEFAULT_SETTINGS in agents/saturday_suggest.py.
-const DEFAULT_SETTINGS = { lunches: 5, dinners: 3, people: 2 };
+const DEFAULT_SETTINGS = {
+  lunches: 5, dinners: 3, people: 2,
+  vegetarian_lunches: false, vegetarian_dinners: true,
+};
+// A meal_settings row (or a plan's settings) over the defaults, ignoring other
+// columns and any that aren't applied yet (schema.sql 6d / 6e).
+const withDefaults = s => Object.fromEntries(
+  Object.entries(DEFAULT_SETTINGS).map(([k, v]) => [k, s?.[k] ?? v]));
+const VEGETARIAN_FIELDS = [
+  { key:"vegetarian_lunches", meal:"lunch",  label:"Vegetarian lunches" },
+  { key:"vegetarian_dinners", meal:"dinner", label:"Vegetarian dinners" },
+];
+// "lunch", "dinner", "lunch and dinner", or "" when neither is on.
+const vegetarianFor = s =>
+  VEGETARIAN_FIELDS.filter(f => s[f.key]).map(f => f.meal).join(" and ");
 const SETTING_FIELDS = [
   { key:"lunches", label:"Lunches per week", chip:"lunches", hint:"Make-ahead, eaten Mon–Fri", min:0, max:14 },
   { key:"dinners", label:"Dinners per week", chip:"dinners", hint:"Cooked fresh, vegetarian",  min:0, max:14 },
@@ -537,6 +551,23 @@ function Stepper({ field, value, onChange }) {
         fontFamily:"'Playfair Display',Georgia,serif", color:"#f5ede0" }}>{value}</div>
       {step(1, "More")}
     </div>
+  );
+}
+
+function Toggle({ on, label, onChange }) {
+  return (
+    <button role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)}
+      style={{
+        width:"52px", height:"32px", borderRadius:"16px", padding:"3px", flexShrink:0,
+        border:"1px solid rgba(200,168,122,0.3)", cursor:"pointer", textAlign:"left",
+        background: on ? "#c8a87a" : "rgba(200,168,122,0.08)",
+      }}>
+      <span style={{
+        display:"block", width:"24px", height:"24px", borderRadius:"50%",
+        background: on ? "#120d07" : "#a08560",
+        transform: on ? "translateX(20px)" : "none", transition:"transform 0.15s",
+      }} />
+    </button>
   );
 }
 
@@ -580,6 +611,24 @@ function SettingsTab({ defaults, onSaved }) {
         ))}
       </div>
 
+      <div style={{ display:"flex", flexDirection:"column", gap:"10px", marginBottom:"24px" }}>
+        {VEGETARIAN_FIELDS.map(f => (
+          <div key={f.key} style={{
+            display:"flex", alignItems:"center", justifyContent:"space-between", gap:"16px",
+            background:"#1c140c", border:"1px solid rgba(200,168,122,0.18)",
+            borderRadius:"12px", padding:"14px 18px" }}>
+            <div>
+              <div style={{ fontSize:"17px", fontWeight:"500", color:"#f5ede0" }}>{f.label}</div>
+              <div style={{ fontSize:"14px", color:"#a08560", marginTop:"2px" }}>
+                Only suggest {f.meal} recipes tagged vegetarian
+              </div>
+            </div>
+            <Toggle on={draft[f.key]} label={f.label}
+              onChange={v => setDraft(d => ({ ...d, [f.key]: v }))} />
+          </div>
+        ))}
+      </div>
+
       <div style={{ background:"rgba(200,168,122,0.06)", border:"1px solid rgba(200,168,122,0.25)",
         borderRadius:"14px", padding:"20px 22px", marginBottom:"16px" }}>
         <div style={{ fontSize:"11px", letterSpacing:"0.16em", textTransform:"uppercase",
@@ -614,7 +663,8 @@ function SettingsTab({ defaults, onSaved }) {
           flex:1, height:"48px", borderRadius:"10px", border:"none", background:"#c8a87a",
           color:"#120d07", fontSize:"16px", fontWeight:"600", cursor:"pointer",
           fontFamily:BUTTON_FONT }}>Save defaults</button>
-        <button onClick={() => setDraft(DEFAULT_SETTINGS)} style={{
+        <button onClick={() => setDraft(d => ({ ...d, ...DEFAULT_SETTINGS,
+            vegetarian_lunches: d.vegetarian_lunches, vegetarian_dinners: d.vegetarian_dinners }))} style={{
           height:"48px", padding:"0 20px", borderRadius:"10px", background:"transparent",
           border:"1px solid rgba(200,168,122,0.3)", color:"#c8a87a", fontSize:"15px",
           cursor:"pointer", fontFamily:BUTTON_FONT }}>
@@ -638,6 +688,7 @@ function GenerateModal({ initial, defaults, weekLabel, generating, status, onGen
     cursor:"pointer", fontFamily:BUTTON_FONT,
   };
   const primaryOff = generating || need.total === 0;
+  const vegFor = vegetarianFor(defaults);
 
   return (
     <div style={{
@@ -735,6 +786,14 @@ function GenerateModal({ initial, defaults, weekLabel, generating, status, onGen
             opacity: primaryOff ? 0.45 : 1,
           }}>{generating ? "Generating…" : "Generate plan"}</button>
         </div>
+
+        {vegFor && (
+          <div style={{ fontSize:"14px", color:"#a08560", marginTop:"16px" }}>
+            Currently suggesting vegetarian meals for {vegFor}. Edit this in{" "}
+            <a href="?tab=settings" target="_blank" rel="noopener noreferrer"
+              style={{ color:"#c8a87a" }}>Settings</a>.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -743,7 +802,11 @@ function GenerateModal({ initial, defaults, weekLabel, generating, status, onGen
 // ─── Main App ───────────────────────────────────────────────────────────────
 
 export default function MiseEnPlace() {
-  const [tab, setTab] = useState("week");
+  // ?tab=settings opens that tab, so other pages can link straight to it.
+  const [tab, setTab] = useState(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    return ["week", "shopping", "library", "queue", "settings"].includes(t) ? t : "week";
+  });
   const [plan, setPlan] = useState(null);          // this week's weekly_plans row, or null
   const [allRecipes, setAllRecipes] = useState([]);
   const [shoppingItems, setShoppingItems] = useState([]);
@@ -773,10 +836,10 @@ export default function MiseEnPlace() {
         supabase.from("recipes").select("*"),
         supabase.from("weekly_plans").select("*").eq("week_start", weekStart).maybeSingle(),
         // Missing until schema.sql 6d is applied; the defaults stand in.
-        supabase.from("meal_settings").select("lunches,dinners,people").eq("id", 1).maybeSingle(),
+        supabase.from("meal_settings").select("*").eq("id", 1).maybeSingle(),
       ]);
       setAllRecipes(recipes || []);
-      if (s) setDefaults(s);
+      if (s) setDefaults(withDefaults(s));
       setPlan(p);
       setShoppingItems(p?.shopping_list || []);
       setLoading(false);

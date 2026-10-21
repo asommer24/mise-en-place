@@ -14,8 +14,9 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 
 from agents.claude import parse_json_response, response_text
-from agents.saturday_suggest import (pick_fallback, plan_monday, servings, targets,
-                                    validate_selection)
+from agents.saturday_suggest import (DEFAULT_SETTINGS, build_prompt, fetch_recipes,
+                                    pick_fallback, plan_monday, servings,
+                                    targets, validate_selection)
 
 
 def block(text=None, thinking=None):
@@ -120,6 +121,39 @@ def test_validate_selection():
             pass
         else:
             raise AssertionError(f"expected rejection: {case}")
+
+
+def test_vegetarian_toggles():
+    """Each toggle filters its own meal type, and the prompt says so."""
+    class Query:
+        def __init__(self, filtered):
+            self.filtered, self.meal = filtered, None
+        def select(self, *a): return self
+        def eq(self, col, val):
+            if col == "meal_type":
+                self.meal = val
+            return self
+        def contains(self, col, vals):
+            assert (col, vals) == ("tags", ["vegetarian"])
+            self.filtered.append(self.meal)
+            return self
+        def order(self, *a, **k): return self
+        def execute(self): return SimpleNamespace(data=[])
+
+    def filtered_for(**flags):
+        got = []
+        sb = SimpleNamespace(table=lambda name: Query(got))
+        fetch_recipes(sb, {**DEFAULT_SETTINGS, **flags})
+        return got
+
+    assert filtered_for() == ["dinner"]                     # defaults: as before
+    assert filtered_for(vegetarian_lunches=True) == ["lunch", "dinner"]
+    assert filtered_for(vegetarian_dinners=False) == []
+    assert filtered_for(vegetarian_lunches=True, vegetarian_dinners=False) == ["lunch"]
+
+    on, off = DEFAULT_SETTINGS, {**DEFAULT_SETTINGS, "vegetarian_dinners": False}
+    assert "vegetarian" in build_prompt(10, 6, on)
+    assert "vegetarian" not in build_prompt(10, 6, off)
 
 
 def test_servings_targets_and_fallback():

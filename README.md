@@ -34,10 +34,11 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 > client, which violates Instagram's TOS and risks the account. So recipes are
 > submitted per-post (one tap from the share sheet) instead.
 
-> **Dinners are vegetarian-only.** The Saturday agent filters the dinner pool to
-> recipes tagged `vegetarian` (`tags` array in Supabase). Tag enough dinner
-> recipes `vegetarian` to cover the dinner servings or the Saturday job will exit
-> with "Not enough dinners."
+> **Vegetarian toggles.** Settings has one switch for lunches and one for
+> dinners (dinners on, lunches off by default). A switch limits that pool to
+> recipes tagged `vegetarian` (`tags` array in Supabase). Tag enough recipes
+> `vegetarian` to cover the servings or the Saturday job will exit with
+> "Not enough dinners tagged vegetarian."
 
 > **Servings, not recipe counts.** The **Settings** tab holds three defaults:
 > lunches per week, dinners per week and people. The week needs
@@ -64,8 +65,9 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 the `increment_times_suggested` function (previously called but never defined,
 so `times_suggested` never incremented) and 7b tops the library up to 6 lunches
 and 4 vegetarian dinners. Also run **6d** (the `meal_settings` defaults table and
-`weekly_plans.settings`); the app falls back to 5 / 3 / 2 without it, but the
-Settings tab can't save. All three are safely re-runnable. Do *not* re-run section 7
+`weekly_plans.settings`) and **6e** (the vegetarian switches); the app falls back
+to the defaults without them, but the Settings tab can't save. All four are
+safely re-runnable. Do *not* re-run section 7
 — it has no unique constraint to conflict on, so it duplicates its recipes.
 
 ### 2. Todoist

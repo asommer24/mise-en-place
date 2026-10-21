@@ -51,7 +51,8 @@ def plan_monday(today: date | None = None) -> date:
 
 # Keep in sync with the meal_settings defaults in scripts/schema.sql and
 # DEFAULT_SETTINGS in frontend/src/App.jsx.
-DEFAULT_SETTINGS = {"lunches": 5, "dinners": 3, "people": 2}
+DEFAULT_SETTINGS = {"lunches": 5, "dinners": 3, "people": 2,
+                    "vegetarian_lunches": False, "vegetarian_dinners": True}
 DEFAULT_SERVINGS = 4   # for recipes saved without a serving size
 
 
@@ -69,21 +70,24 @@ def load_settings(sb) -> dict:
     """The saved defaults. Falls back to DEFAULT_SETTINGS so a missing table
     (schema is applied by hand) doesn't stop the Saturday cron."""
     try:
-        row = (sb.table("meal_settings").select("lunches,dinners,people")
-               .eq("id", 1).maybe_single().execute().data)
+        # "*" rather than a column list: a column added later (vegetarian_*,
+        # schema 6e) that isn't applied yet shouldn't hide the saved numbers.
+        row = (sb.table("meal_settings").select("*")
+               .eq("id", 1).maybe_single().execute().data) or {}
     except Exception as exc:
         logger.warning("meal_settings unreadable, using defaults: %s "
                        "(apply scripts/schema.sql 6d?)", exc)
-        row = None
-    return {**DEFAULT_SETTINGS, **(row or {})}
+        row = {}
+    return {k: row.get(k, v) for k, v in DEFAULT_SETTINGS.items()}
 
 
 # ---------------------------------------------------------------------------
 # Step 1: Fetch recipes from Supabase
 # ---------------------------------------------------------------------------
 
-def fetch_recipes(sb) -> dict:
-    """Returns {'lunches': [...], 'dinners': [...], 'queued': [...]}"""
+def fetch_recipes(sb, settings: dict) -> dict:
+    """Returns {'lunches': [...], 'dinners': [...], 'queued': [...]}. Lunches
+    and dinners are each limited to vegetarian recipes when `settings` says so."""
     # Queued recipes (user-submitted, prioritised)
     queued = (
         sb.table("recipes")
@@ -93,25 +97,17 @@ def fetch_recipes(sb) -> dict:
         .execute()
     ).data or []
 
-    # All lunches
-    lunches = (
-        sb.table("recipes")
-        .select("*")
-        .eq("meal_type", "lunch")
-        .order("times_suggested", desc=False)   # prefer less-used recipes
-        .execute()
-    ).data or []
+    def pool(meal_type: str, vegetarian: bool) -> list:
+        q = sb.table("recipes").select("*").eq("meal_type", meal_type)
+        if vegetarian:
+            # "vegetarian" is a value in the tags[] array (there is no
+            # vegetarian column), so filter with contains().
+            q = q.contains("tags", ["vegetarian"])
+        # prefer less-used recipes
+        return q.order("times_suggested", desc=False).execute().data or []
 
-    # All dinners — vegetarian only. "vegetarian" is a value in the tags[]
-    # array (there is no vegetarian column), so filter with contains().
-    dinners = (
-        sb.table("recipes")
-        .select("*")
-        .eq("meal_type", "dinner")
-        .contains("tags", ["vegetarian"])
-        .order("times_suggested", desc=False)
-        .execute()
-    ).data or []
+    lunches = pool("lunch", settings["vegetarian_lunches"])
+    dinners = pool("dinner", settings["vegetarian_dinners"])
 
     logger.info("fetch_recipes returning: lunches=%d dinners=%d queued=%d",
                 len(lunches), len(dinners), len(queued))
@@ -122,11 +118,13 @@ def fetch_recipes(sb) -> dict:
 # Step 2: Claude picks recipes that cover the servings
 # ---------------------------------------------------------------------------
 
-def build_prompt(lunch_target: int, dinner_target: int) -> str:
+def build_prompt(lunch_target: int, dinner_target: int, settings: dict) -> str:
+    def veg(on: bool) -> str:
+        return " (the candidates below are already filtered to vegetarian)" if on else ""
     return f"""
-You are a meal planning assistant for a vegetarian household. Your job is to choose:
-  - LUNCH recipes (make-ahead friendly: prepped Sunday, refrigerated, reheated or eaten cold all week) whose servings add up to at least {lunch_target}
-  - DINNER recipes (the candidates below are already filtered to vegetarian) whose servings add up to at least {dinner_target}
+You are a meal planning assistant. Your job is to choose:
+  - LUNCH recipes (make-ahead friendly: prepped Sunday, refrigerated, reheated or eaten cold all week){veg(settings["vegetarian_lunches"])} whose servings add up to at least {lunch_target}
+  - DINNER recipes{veg(settings["vegetarian_dinners"])} whose servings add up to at least {dinner_target}
 
 Each recipe has a "servings" count. Whole recipes only, and leftovers are the
 point, but don't overshoot: removing the recipe with the fewest servings from
@@ -208,7 +206,7 @@ def select_recipes_with_claude(recipes: dict, settings: dict) -> dict:
             "queue_priority": r.get("queue_priority", 0),
         })
 
-    prompt = build_prompt(lunch_target, dinner_target)
+    prompt = build_prompt(lunch_target, dinner_target, settings)
     user_msg = f"Available recipes:\n{json.dumps(all_recipes, indent=2)}"
 
     for _ in range(2):
@@ -295,13 +293,17 @@ def main(settings: dict | None = None) -> None:
     per-week override); the Saturday cron passes nothing."""
     sb = get_supabase()
     week_start = plan_monday()
-    settings = settings or load_settings(sb)
+    # The override only carries lunches/dinners/people; vegetarian comes from
+    # the saved defaults.
+    settings = {**load_settings(sb), **(settings or {})}
 
     # 1. Fetch recipes
-    recipes = fetch_recipes(sb)
+    recipes = fetch_recipes(sb, settings)
     for kind, target in zip(("lunches", "dinners"), targets(settings)):
         if sum(servings(r) for r in recipes[kind]) < target:
-            raise RuntimeError(f"Not enough {kind} in DB to cover {target} servings")
+            hint = (" tagged vegetarian (or turn vegetarian off in Settings)"
+                    if settings[f"vegetarian_{kind}"] else "")
+            raise RuntimeError(f"Not enough {kind}{hint} in DB to cover {target} servings")
 
     # 2. Claude selection
     selection = select_recipes_with_claude(recipes, settings)
