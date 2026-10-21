@@ -3,3 +3,4 @@
 3. Test multiple user function 
 4. Add support for tracking wish list of restaurants
 5. Add "cooked" to the DB so we can track / review recipes. 
+6. Add a button to the shopping tab to allow shopping list generation
