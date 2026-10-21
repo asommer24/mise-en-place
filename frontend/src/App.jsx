@@ -11,6 +11,14 @@ function formatWeek(weekStart, opts) {
   return new Date(`${weekStart}T00:00:00`).toLocaleDateString("en-US", opts);
 }
 
+// The Monday the plan is filed under: this week's Mon–Fri, the upcoming Monday
+// from Saturday on. Keep in sync with plan_monday() in agents/saturday_suggest.py.
+function planMonday(today = new Date()) {
+  const wd = (today.getDay() + 6) % 7;                      // Monday = 0
+  const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + (wd < 5 ? -wd : 7 - wd));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 // ─── Components ────────────────────────────────────────────────────────────
 
 function EmptyState({ children }) {
@@ -491,7 +499,7 @@ function SwapModal({ recipe, allRecipes, onConfirm, onClose }) {
 
 export default function MiseEnPlace() {
   const [tab, setTab] = useState("week");
-  const [plan, setPlan] = useState(null);          // latest weekly_plans row, or null
+  const [plan, setPlan] = useState(null);          // this week's weekly_plans row, or null
   const [allRecipes, setAllRecipes] = useState([]);
   const [shoppingItems, setShoppingItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -502,6 +510,7 @@ export default function MiseEnPlace() {
   const [triggering, setTriggering] = useState(false);
   const [triggerStatus, setTriggerStatus] = useState("");
   const triggerPollRef = useRef(null);
+  const weekStart = planMonday();
 
   // Resolve the plan's lunch/dinner IDs to full recipes, preserving array order
   // (json_agg in the SQL view doesn't guarantee order, so we resolve client-side).
@@ -513,15 +522,11 @@ export default function MiseEnPlace() {
 
   useEffect(() => {
     (async () => {
-      // Show the most recent plan: this week's Mon–Fri, then next week's as soon
-      // as Saturday's cron creates it. Avoids brittle client-side week math.
-      const [{ data: recipes }, { data: plans }] = await Promise.all([
+      const [{ data: recipes }, { data: p }] = await Promise.all([
         supabase.from("recipes").select("*"),
-        supabase.from("weekly_plans").select("*")
-          .order("week_start", { ascending: false }).limit(1),
+        supabase.from("weekly_plans").select("*").eq("week_start", weekStart).maybeSingle(),
       ]);
       setAllRecipes(recipes || []);
-      const p = plans?.[0] || null;
       setPlan(p);
       setShoppingItems(p?.shopping_list || []);
       setLoading(false);
@@ -552,7 +557,8 @@ export default function MiseEnPlace() {
     }
 
     // Poll Supabase for a new weekly_plans row
-    const startId = plan?.id ?? null;
+    // Regenerating upserts the same row (same id), so detect it by updated_at.
+    const startUpdated = plan?.updated_at ?? null;
     let attempts = 0;
     triggerPollRef.current = setInterval(async () => {
       attempts++;
@@ -562,13 +568,12 @@ export default function MiseEnPlace() {
         setTriggering(false);
         return;
       }
-      const { data: plans } = await supabase
+      const { data: latest } = await supabase
         .from("weekly_plans")
         .select("*")
-        .order("week_start", { ascending: false })
-        .limit(1);
-      const latest = plans?.[0];
-      if (latest && latest.id !== startId) {
+        .eq("week_start", weekStart)
+        .maybeSingle();
+      if (latest && latest.updated_at !== startUpdated) {
         clearInterval(triggerPollRef.current);
         setPlan(latest);
         setShoppingItems(latest.shopping_list || []);
@@ -594,6 +599,16 @@ export default function MiseEnPlace() {
     await supabase.from("weekly_plans")
       .update({ status: "confirmed", confirmed_at: new Date().toISOString() })
       .eq("id", plan.id);
+  };
+
+  // Empties the row rather than deleting it: the anon key can UPDATE the current
+  // week's plan but not DELETE, and Generate upserts the same row back to life.
+  const handleClear = async () => {
+    if (!plan || !window.confirm("Clear this week's plan and shopping list?")) return;
+    const cleared = { lunches: [], dinners: [], shopping_list: [], status: "suggested", confirmed_at: null, notes: null };
+    setPlan(p => ({ ...p, ...cleared }));
+    setShoppingItems([]);
+    await supabase.from("weekly_plans").update(cleared).eq("id", plan.id);
   };
 
   const handleQueueSubmit = async () => {
@@ -627,10 +642,9 @@ export default function MiseEnPlace() {
   };
 
   const queued = allRecipes.filter(r => r.in_queue);
-  const weekOf = formatWeek(plan?.week_start, { month: "long", day: "numeric", year: "numeric" });
-  const weekLabel = plan?.week_start
-    ? `Week of ${formatWeek(plan.week_start, { month: "short", day: "numeric" })}`
-    : "";
+  const hasPlan = !!(plan?.lunches?.length || plan?.dinners?.length);
+  const weekOf = formatWeek(weekStart, { month: "long", day: "numeric", year: "numeric" });
+  const weekLabel = `Week of ${formatWeek(weekStart, { month: "short", day: "numeric" })}`;
 
   return (
     <>
@@ -668,7 +682,7 @@ export default function MiseEnPlace() {
                 <h1 style={{ fontFamily:"'Playfair Display',Georgia,serif",
                   fontSize:"32px", fontWeight:"700", color:"#f5ede0",
                   lineHeight:"1.1" }}>
-                  {loading ? "Loading…" : weekOf ? `Week of ${weekOf}` : "No plan yet"}
+                  {loading ? "Loading…" : `Week of ${weekOf}`}
                 </h1>
               </div>
               <div style={{ textAlign:"right" }}>
@@ -704,7 +718,7 @@ export default function MiseEnPlace() {
           {tab === "week" && (
             loading ? (
               <EmptyState>Loading this week's plan…</EmptyState>
-            ) : !plan ? (
+            ) : !hasPlan ? (
               <div style={{ textAlign:"center", padding:"60px 20px" }}>
                 <div style={{ color:"#5a4030", fontSize:"14px",
                   lineHeight:"1.6", marginBottom:"24px" }}>
@@ -795,6 +809,18 @@ export default function MiseEnPlace() {
                   }}
                 >
                   {triggering ? "⏳" : "↺"}
+                </button>
+                <button
+                  onClick={handleClear}
+                  disabled={triggering}
+                  title="Clear plan"
+                  style={{
+                    padding:"14px 18px", background:"rgba(200,168,122,0.06)",
+                    border:"1px solid rgba(200,168,122,0.15)", borderRadius:"10px",
+                    color:"#806040", fontSize:"16px", cursor:"pointer",
+                  }}
+                >
+                  🗑
                 </button>
               </div>
               {triggerStatus && (

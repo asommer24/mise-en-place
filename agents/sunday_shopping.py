@@ -29,7 +29,7 @@ from supabase import create_client
 from agents.claude import ask_json
 # Import rather than re-derive: the bug this replaces was two copies of the
 # week math disagreeing, so the two agents must now agree by construction.
-from agents.saturday_suggest import next_monday
+from agents.saturday_suggest import plan_monday
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -78,10 +78,10 @@ def get_supabase():
 # ---------------------------------------------------------------------------
 
 def fetch_plan_with_recipes(sb) -> dict:
-    # Saturday files the plan under next_monday(); running a day later, this
+    # Saturday files the plan under plan_monday(); running a day later, this
     # job resolves to that same Monday. Using "this week's Monday" here made
     # Sunday shop for the PREVIOUS week's plan, or find nothing at all.
-    week_start = next_monday()
+    week_start = plan_monday()
 
     plan_res = (
         sb.table("weekly_plans")

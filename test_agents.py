@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 
 from agents.claude import parse_json_response, response_text
-from agents.saturday_suggest import next_monday, validate_selection
+from agents.saturday_suggest import plan_monday, validate_selection
 
 
 def block(text=None, thinking=None):
@@ -38,16 +38,15 @@ def test_week_alignment():
                      date(2026, 12, 26)]:
         assert saturday.weekday() == 5, saturday
         sunday = saturday + timedelta(days=1)
-        assert next_monday(saturday) == next_monday(sunday), saturday
+        assert plan_monday(saturday) == plan_monday(sunday), saturday
         # and it really is the upcoming Monday, not some other day
-        assert next_monday(saturday).weekday() == 0
-        assert next_monday(saturday) > saturday
+        assert plan_monday(saturday).weekday() == 0
+        assert plan_monday(saturday) > saturday
 
-    # Sanity on the rest of the week: never returns a past Monday.
-    for offset in range(14):
+    # Mon-Fri: this week's Monday, so a manual Generate shows on This Week.
+    for offset in range(5):
         d = date(2026, 8, 17) + timedelta(days=offset)
-        assert next_monday(d) >= d, d
-        assert next_monday(d).weekday() == 0, d
+        assert plan_monday(d) == date(2026, 8, 17), d
 
 
 def test_response_text_skips_thinking():

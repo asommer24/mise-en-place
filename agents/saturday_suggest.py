@@ -38,14 +38,14 @@ def get_supabase():
                          os.environ["SUPABASE_SERVICE_KEY"])
 
 
-def next_monday(today: date | None = None) -> date:
-    """The Monday a plan is filed under. `today` is injectable so the week
-    math is testable without waiting for Saturday to come around."""
+def plan_monday(today: date | None = None) -> date:
+    """The Monday a plan is filed under: this week's Monday Mon-Fri, the
+    upcoming one from Saturday on. Keep in sync with planMonday() in
+    frontend/src/App.jsx. `today` is injectable so the week math is testable
+    without waiting for Saturday to come around."""
     today = today or date.today()
-    days_ahead = 7 - today.weekday()  # Monday = 0
-    if days_ahead == 7:
-        days_ahead = 0
-    return today + timedelta(days=days_ahead)
+    wd = today.weekday()  # Monday = 0
+    return today + timedelta(days=-wd if wd < 5 else 7 - wd)
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ def save_weekly_plan(sb, selection: dict, week_start: date) -> str:
 
 def main() -> None:
     sb = get_supabase()
-    week_start = next_monday()
+    week_start = plan_monday()
 
     # 1. Fetch recipes
     recipes = fetch_recipes(sb)
