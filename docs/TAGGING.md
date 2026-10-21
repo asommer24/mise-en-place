@@ -18,7 +18,7 @@ other, never both.
 
 | Source | `meal_type` | `tags` | `servings` |
 |---|---|---|---|
-| **Instagram / URL link** (Queue tab or iOS Shortcut) | Claude decides | Claude decides, plus `vegetarian` from its explicit answer | Claude's reading of the recipe |
+| **Instagram / URL link** (Queue tab) | Claude decides | Claude decides, plus `vegetarian` from its explicit answer | Claude's reading of the recipe |
 | **Recipe name only** (Queue tab) | Always `dinner` | None | Database default of 4 |
 | **Seed recipes** (`scripts/schema.sql`) | Set by hand | Set by hand | Set by hand |
 | **Edit button** (Library or Queue card) | You choose | You edit | You edit |
@@ -51,8 +51,8 @@ result before it is saved.
 
 ### Name-only entries
 
-Typing a name that matches an existing recipe re-queues that recipe. An unknown
-name creates a **stub**: `meal_type = dinner`, no tags, no ingredients, and the
+Typing a name that matches an existing recipe doesn't create a new one (see
+[QUEUE.md](QUEUE.md)). An unknown name creates a **stub**: `meal_type = dinner`, no tags, no ingredients, and the
 default 4 servings. A stub can't be a lunch or count as vegetarian until you
 fix it with the edit button.
 
