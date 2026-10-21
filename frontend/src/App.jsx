@@ -69,7 +69,7 @@ function TagPill({ label, kind = "tag", on, onClick }) {
 
 // onTag/isOn turn the tag row into filter controls (Library tab). Without
 // them the card renders the old read-only two-tag summary.
-function RecipeCard({ recipe, onSwap, onEdit, compact = false, onTag, isOn, query }) {
+function RecipeCard({ recipe, onSwap, onEdit, onRemove, compact = false, onTag, isOn, query }) {
   const totalMins = (recipe.prep_time_mins || 0) + (recipe.cook_time_mins || 0);
   const interactive = !!onTag;
   return (
@@ -149,13 +149,18 @@ function RecipeCard({ recipe, onSwap, onEdit, compact = false, onTag, isOn, quer
             borderRadius:"6px", cursor:"pointer"
           }}>swap ↕</button>
         )}
-        {onEdit && (
-          <button onClick={() => onEdit(recipe)} style={{
-            marginLeft:"auto", fontSize:"11px",
-            background:"rgba(200,168,122,0.1)", color:"#c8a87a",
-            border:"1px solid rgba(200,168,122,0.2)", padding:"4px 12px",
-            borderRadius:"6px", cursor:"pointer"
-          }}>edit</button>
+        {(onEdit || onRemove) && (
+          <div style={{ marginLeft:"auto", display:"flex", gap:"6px" }}>
+            {[[onEdit, "edit", "Edit"], [onRemove, "remove", "Remove from queue:"]].map(
+              ([fn, text, aria]) => fn && (
+                <button key={text} aria-label={`${aria} ${recipe.name}`}
+                  onClick={() => fn(recipe)} style={{
+                    fontSize:"11px", background:"rgba(200,168,122,0.1)", color:"#c8a87a",
+                    border:"1px solid rgba(200,168,122,0.2)", padding:"4px 12px",
+                    borderRadius:"6px", cursor:"pointer"
+                  }}>{text}</button>
+              ))}
+          </div>
         )}
       </div>
     </div>
@@ -1080,6 +1085,24 @@ export default function MiseEnPlace() {
     await supabase.from("weekly_plans").update(cleared).eq("id", plan.id);
   };
 
+  const loadRecipes = async () => {
+    const { data } = await supabase.from("recipes").select("*");
+    if (data) setAllRecipes(data);
+  };
+
+  // Takes it off the queue only; the recipe stays in the library.
+  const handleRemoveFromQueue = async (r) => {
+    const setQueued = on =>
+      setAllRecipes(rs => rs.map(x => x.id === r.id ? { ...x, in_queue: on } : x));
+    setQueued(false);   // optimistic
+    const { error } = await supabase.from("recipes").update({ in_queue: false }).eq("id", r.id);
+    if (error) {
+      setQueued(true);
+      setQueueFeedback(`⚠️ Couldn't remove it: ${error.message}`);
+      setTimeout(() => setQueueFeedback(""), 4000);
+    }
+  };
+
   const handleQueueSubmit = async () => {
     const input = queueInput.trim();
     if (!input) return;
@@ -1099,8 +1122,9 @@ export default function MiseEnPlace() {
       });
       const data = await resp.json().catch(() => ({}));
       if (resp.ok) {
-        setQueueFeedback(`✅ ${data.message || "Added to queue!"}`);
+        setQueueFeedback(`${data.duplicate ? "ℹ️" : "✅"} ${data.message || "Added to queue!"}`);
         setQueueInput("");
+        loadRecipes();   // the queue list comes from state, not from the response
       } else {
         setQueueFeedback(`⚠️ ${data.detail || "Couldn't add that. Try again."}`);
       }
@@ -1359,8 +1383,8 @@ export default function MiseEnPlace() {
               </h2>
               <p style={{ fontSize:"13px", color:"#806040", marginBottom:"20px" }}>
                 These recipes are prioritised for upcoming weeks. Add one below by
-                pasting an Instagram link or recipe name — or share a post straight
-                from Instagram with the iOS Shortcut.
+                pasting an Instagram link or a recipe name. Anything already in
+                your library or queue won't be added twice.
               </p>
 
               {/* Add manually */}
@@ -1407,7 +1431,7 @@ export default function MiseEnPlace() {
               ) : queued.length === 0 ? (
                 <div style={{ textAlign:"center", padding:"40px",
                   color:"#5a4030", fontSize:"14px" }}>
-                  Queue is empty — text a link or recipe name to add one!
+                  Queue is empty — paste a link or recipe name above to add one!
                 </div>
               ) : (
                 <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
@@ -1422,7 +1446,8 @@ export default function MiseEnPlace() {
                         {i+1}
                       </div>
                       <div style={{ flex:1 }}>
-                        <RecipeCard recipe={r} onEdit={setEditTarget} />
+                        <RecipeCard recipe={r} onEdit={setEditTarget}
+                          onRemove={handleRemoveFromQueue} />
                       </div>
                     </div>
                   ))}

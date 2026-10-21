@@ -10,6 +10,7 @@ Each block corresponds to a bug that shipped, so a regression fails loudly
 here instead of silently on a Saturday morning.
 """
 
+import os
 from datetime import date, timedelta
 from types import SimpleNamespace
 
@@ -174,6 +175,91 @@ def test_ingest_tags_vegetarian_explicitly():
     assert saved_tags(vegetarian=False, tags=["quick"]) == ["quick"]
     assert saved_tags(tags=["quick"]) == ["quick"]           # not answered: no guess
     assert saved_tags(vegetarian=True) == ["vegetarian"]     # no tags key at all
+
+
+class FakeSB:
+    """Just enough of the Supabase client for /ingest's duplicate handling."""
+    def __init__(self, dup=None, rpc_error=False, partial=None):
+        self.dup, self.rpc_error, self.partial = dup, rpc_error, partial or []
+        self.updates, self.rpc_calls = [], []
+
+    def rpc(self, fn, args):
+        self.rpc_calls.append((fn, args))
+        if self.rpc_error:
+            raise RuntimeError("function find_duplicate_recipe does not exist")
+        return SimpleNamespace(execute=lambda: SimpleNamespace(
+            data=[self.dup] if self.dup else []))
+
+    def table(self, name):
+        sb, state = self, {"select": False}
+
+        class Table:
+            def select(self, *a): state["select"] = True; return self
+            def insert(self, row): return self
+            def update(self, vals): sb.updates.append((name, vals)); return self
+            def eq(self, *a): return self
+            def ilike(self, *a): return self
+            def limit(self, *a): return self
+            def execute(self):
+                if name == "recipes" and state["select"]:
+                    return SimpleNamespace(data=sb.partial)
+                return SimpleNamespace(data=[{"id": "sub1"}])
+        return Table()
+
+
+def test_duplicate_handling():
+    """
+    A submission that matches a library recipe is not added again. Already
+    queued: say so. In the library only: queue it. The link check runs before
+    anything is fetched, so a repeat link costs no Claude call.
+    """
+    import agents.ingest as ing
+    from fastapi.testclient import TestClient
+
+    queued = {"id": "r1", "name": "Lemon Orzo Salad", "in_queue": True}
+    shelved = {**queued, "in_queue": False}
+
+    assert ing.find_duplicate(FakeSB(dup=queued), url="u") == queued
+    assert ing.find_duplicate(FakeSB(), url="u") is None
+    assert ing.find_duplicate(FakeSB(rpc_error=True), url="u") is None  # 6g not applied
+
+    sb = FakeSB()
+    assert "already in your queue" in ing.duplicate_response(sb, queued)["message"]
+    assert sb.updates == []
+    resp = ing.duplicate_response(sb, shelved)
+    assert "Queued it again" in resp["message"] and resp["duplicate"] is True
+    assert sb.updates == [("recipes", {"in_queue": True, "queue_priority": 10})]
+
+    os.environ["INGEST_TOKEN"] = "t"
+    client, headers = TestClient(ing.app), {"X-Ingest-Token": "t"}
+
+    def no_fetch(url):
+        raise AssertionError("fetched a link that is already in the library")
+    real_get_sb, real_fetch = ing.get_sb, ing.fetch_instagram_content
+    ing.fetch_instagram_content = no_fetch
+    try:
+        sb = FakeSB(dup=queued)
+        ing.get_sb = lambda: sb
+        r = client.post("/ingest", headers=headers,
+                        json={"url": "https://www.instagram.com/p/Cabc123/?igsh=x"})
+        assert r.status_code == 200 and r.json()["duplicate"] is True, r.text
+        assert sb.rpc_calls[0] == ("find_duplicate_recipe",
+                                   {"p_url": "https://www.instagram.com/p/Cabc123/?igsh=x",
+                                    "p_name": None})
+        assert ("recipe_submissions", {"status": "duplicate", "recipe_id": "r1",
+                                       "processed_at": sb.updates[0][1]["processed_at"]}) == sb.updates[0]
+
+        # name only: exact match via the RPC, else the looser "contains" match
+        sb = FakeSB(dup=queued)
+        ing.get_sb = lambda: sb
+        r = client.post("/ingest", headers=headers, json={"name": "lemon orzo salad!"})
+        assert r.json()["duplicate"] is True
+        sb = FakeSB(partial=[shelved])
+        ing.get_sb = lambda: sb
+        r = client.post("/ingest", headers=headers, json={"name": "orzo"})
+        assert "Queued it again" in r.json()["message"]
+    finally:
+        ing.get_sb, ing.fetch_instagram_content = real_get_sb, real_fetch
 
 
 def test_servings_targets_and_fallback():

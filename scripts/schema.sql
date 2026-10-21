@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS recipe_submissions (
     submitted_by    TEXT        NOT NULL,       -- phone number (E.164)
     raw_message     TEXT        NOT NULL,       -- original SMS text
     parsed_url      TEXT,                       -- extracted Instagram/URL
-    status          TEXT        DEFAULT 'pending',  -- 'pending'|'processing'|'added'|'failed'
+    status          TEXT        DEFAULT 'pending',  -- 'pending'|'processing'|'added'|'duplicate'|'failed'
     error_detail    TEXT,                       -- populated on failure: fetch/parse/extraction error
     recipe_id       UUID        REFERENCES recipes(id),
     submitted_at    TIMESTAMPTZ DEFAULT NOW(),
@@ -288,14 +288,15 @@ ALTER TABLE meal_settings
 
 
 -- ---------------------------------------------------------------------------
--- 6f. Let the web app edit a recipe's meal type, tags and servings
---     The anon key is public, so keep this narrow: only those three columns
+-- 6f. Let the web app edit a recipe's meal type, tags and servings, and take
+--     it out of the queue (in_queue)
+--     The anon key is public, so keep this narrow: only those four columns
 --     are updatable (column grant), and the policy rejects values the planner
 --     can't use. Everything else on a recipe stays service-role-only.
 --     Re-runnable.
 -- ---------------------------------------------------------------------------
 REVOKE UPDATE ON recipes FROM anon;
-GRANT UPDATE (meal_type, tags, servings) ON recipes TO anon;
+GRANT UPDATE (meal_type, tags, servings, in_queue) ON recipes TO anon;
 
 DROP POLICY IF EXISTS "Public edit recipe basics" ON recipes;
 CREATE POLICY "Public edit recipe basics" ON recipes
@@ -304,6 +305,76 @@ CREATE POLICY "Public edit recipe basics" ON recipes
     WITH CHECK (meal_type IN ('lunch', 'dinner')
                 AND servings BETWEEN 1 AND 25
                 AND cardinality(tags) <= 10);
+
+
+-- ---------------------------------------------------------------------------
+-- 6g. Duplicate detection
+--
+--     Two keys, derived by the database from columns that already exist, so
+--     every row (seeds, ingest, rows from before this) has them and there is
+--     one definition of "the same":
+--
+--       source_key  identifies the LINK. Instagram posts, reels and IGTV are
+--                   keyed on their shortcode ("instagram:Cabc123"), so
+--                   ?igsh=... tracking and username prefixes don't matter.
+--                   Any other link is lower-cased, minus scheme, "www.",
+--                   #fragment and trailing "/". The query string is kept,
+--                   because sites like YouTube identify the page by it.
+--                   Unique: one row per link.
+--       name_key    identifies the RECIPE NAME: lower-cased, punctuation and
+--                   spacing collapsed ("Lemon  Orzo Salad!" = "lemon orzo
+--                   salad"). Not unique, since two recipes can share a name;
+--                   the ingest endpoint treats a match as a duplicate.
+--
+--     find_duplicate_recipe() is what the ingest endpoint calls. Re-runnable.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION recipe_name_key(p_name TEXT) RETURNS TEXT AS $$
+    -- NULLIF: a name with no a-z/0-9 at all (e.g. all non-Latin) gets no key
+    -- rather than a shared empty one that would match every other such name.
+    SELECT NULLIF(btrim(regexp_replace(lower(p_name), '[^a-z0-9]+', ' ', 'g')), '');
+$$ LANGUAGE sql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION recipe_source_key(p_url TEXT) RETURNS TEXT AS $$
+    SELECT CASE
+        WHEN p_url IS NULL OR btrim(p_url) = '' THEN NULL
+        WHEN p_url ~* 'instagram\.com/([A-Za-z0-9_.]+/)?(p|reel|reels|tv)/[A-Za-z0-9_-]+'
+            THEN 'instagram:' || (regexp_match(
+                p_url,
+                'instagram\.com/(?:[A-Za-z0-9_.]+/)?(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)',
+                'i'))[1]
+        ELSE regexp_replace(lower(split_part(btrim(p_url), '#', 1)),
+                            '^https?://(www\.)?|/+$', '', 'g')
+    END;
+$$ LANGUAGE sql IMMUTABLE;
+
+ALTER TABLE recipes
+    ADD COLUMN IF NOT EXISTS source_key TEXT GENERATED ALWAYS AS (recipe_source_key(source_url)) STORED,
+    ADD COLUMN IF NOT EXISTS name_key   TEXT GENERATED ALWAYS AS (recipe_name_key(name)) STORED;
+
+CREATE INDEX IF NOT EXISTS recipes_name_key_idx ON recipes (name_key);
+
+-- If this fails, two recipes already share a link. Find them with:
+--   SELECT source_key, array_agg(name) FROM recipes
+--   WHERE source_key IS NOT NULL GROUP BY 1 HAVING count(*) > 1;
+-- then delete or re-link one of each pair and run this statement again.
+CREATE UNIQUE INDEX IF NOT EXISTS recipes_source_key_uniq
+    ON recipes (source_key) WHERE source_key IS NOT NULL;
+
+-- Best match for a submission: the same link beats the same name.
+CREATE OR REPLACE FUNCTION find_duplicate_recipe(p_url TEXT, p_name TEXT DEFAULT NULL)
+RETURNS TABLE (id UUID, name TEXT, in_queue BOOLEAN, matched_on TEXT) AS $$
+    SELECT m.id, m.name, m.in_queue, m.matched_on FROM (
+        SELECT r.id, r.name, r.in_queue, 'url'::text AS matched_on
+          FROM recipes r
+         WHERE p_url IS NOT NULL AND r.source_key = recipe_source_key(p_url)
+        UNION ALL
+        SELECT r.id, r.name, r.in_queue, 'name'::text
+          FROM recipes r
+         WHERE p_name IS NOT NULL AND r.name_key = recipe_name_key(p_name)
+    ) m
+    ORDER BY (m.matched_on = 'url') DESC
+    LIMIT 1;
+$$ LANGUAGE sql STABLE;
 
 
 -- ---------------------------------------------------------------------------

@@ -3,14 +3,16 @@ ingest.py
 ---------
 FastAPI ingest endpoint for adding recipes to the queue.
 
-Recipes reach the agent by being submitted to POST /ingest — either pasted
-into the web app's Queue box, or shared from Instagram via a one-tap iOS
-Share-sheet Shortcut. There is no official Instagram API for reading a private
+Recipes reach the agent by being submitted to POST /ingest — pasted into the
+web app's Queue box. There is no official Instagram API for reading a private
 "Saved" collection, so recipes are submitted per-post rather than auto-pulled.
 
 Handles two payload shapes:
   1. {"url": "https://instagram.com/p/..."}  → fetch, extract recipe, queue it
   2. {"name": "Lemon Orzo Salad"}            → match existing library or queue a stub
+
+Either way a submission that duplicates a library recipe (same source link or
+same normalised name) is not added again: see find_duplicate().
 
 Auth: every request must send header  X-Ingest-Token: <INGEST_TOKEN>.
 
@@ -213,6 +215,31 @@ def fetch_instagram_content(url: str) -> tuple[str, str]:
 # Save recipe to Supabase queue
 # ---------------------------------------------------------------------------
 
+def find_duplicate(sb, url: str | None = None, name: str | None = None) -> dict | None:
+    """The library recipe a submission duplicates, matched on the source-URL key
+    or the normalised name (find_duplicate_recipe, scripts/schema.sql 6g), or
+    None. Without that function applied there's no check: it logs and carries on."""
+    try:
+        rows = sb.rpc("find_duplicate_recipe", {"p_url": url, "p_name": name}).execute().data
+    except Exception as exc:
+        logger.warning("duplicate check skipped: %s (apply scripts/schema.sql 6g?)", exc)
+        return None
+    return rows[0] if rows else None
+
+
+def duplicate_response(sb, dup: dict) -> dict:
+    """Already queued: say so. In the library but not queued: queue it again,
+    which is what a name-only submission has always done."""
+    if dup["in_queue"]:
+        message = f'"{dup["name"]}" is already in your queue.'
+    else:
+        sb.table("recipes").update({"in_queue": True, "queue_priority": 10}) \
+            .eq("id", dup["id"]).execute()
+        message = f'"{dup["name"]}" is already in your library. Queued it again.'
+    return {"ok": True, "duplicate": True, "recipe_id": dup["id"],
+            "name": dup["name"], "message": message}
+
+
 def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
                          source_type: str) -> str:
     """Returns the new recipe ID."""
@@ -276,6 +303,19 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
         }).execute()
         sub_id = sub_res.data[0]["id"]
 
+        def finish_duplicate(dup: dict) -> dict:
+            sb.table("recipe_submissions").update({
+                "status": "duplicate",
+                "recipe_id": dup["id"],
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", sub_id).execute()
+            return duplicate_response(sb, dup)
+
+        # Same link already known: stop before fetching or calling Claude.
+        dup = find_duplicate(sb, url=url)
+        if dup:
+            return finish_duplicate(dup)
+
         # Fetch content
         content, fetch_error = (fetch_instagram_content(url) if is_instagram
                                 else fetch_url_content(url))
@@ -303,6 +343,11 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
                 detail="Couldn't parse a recipe from that link. Try the recipe name instead.",
             )
 
+        # Different link, same recipe: catch it by the name Claude extracted.
+        dup = find_duplicate(sb, url=url, name=recipe["name"])
+        if dup:
+            return finish_duplicate(dup)
+
         recipe_id = save_recipe_to_queue(sb, recipe, url, source_type)
 
         sb.table("recipe_submissions").update({
@@ -320,23 +365,20 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
         if not name:
             raise HTTPException(status_code=400, detail="Empty recipe name")
 
-        # Search if it exists already
-        existing = (
-            sb.table("recipes")
-            .select("id, name")
-            .ilike("name", f"%{name[:50]}%")
-            .limit(1)
-            .execute()
-        ).data
-
-        if existing:
-            match = existing[0]
-            sb.table("recipes").update({
-                "in_queue": True,
-                "queue_priority": 10,
-            }).eq("id", match["id"]).execute()
-            return {"ok": True, "recipe_id": match["id"], "name": match["name"],
-                    "message": f'Found "{match["name"]}" in the library and queued it.'}
+        # Exact (normalised) name first, then the looser "contains" match that
+        # lets a partial name find a library recipe.
+        dup = find_duplicate(sb, name=name)
+        if not dup:
+            partial = (
+                sb.table("recipes")
+                .select("id, name, in_queue")
+                .ilike("name", f"%{name[:50]}%")
+                .limit(1)
+                .execute()
+            ).data
+            dup = partial[0] if partial else None
+        if dup:
+            return duplicate_response(sb, dup)
 
         # Create a stub recipe
         stub = {
