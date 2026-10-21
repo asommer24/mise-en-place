@@ -156,6 +156,26 @@ def test_vegetarian_toggles():
     assert "vegetarian" not in build_prompt(10, 6, off)
 
 
+def test_ingest_tags_vegetarian_explicitly():
+    """The planner filters on the 'vegetarian' tag, so ingest adds it from
+    Claude's explicit answer instead of hoping it shows up in tags."""
+    from agents.ingest import save_recipe_to_queue
+
+    def saved_tags(**recipe):
+        rows = []
+        sb = SimpleNamespace(table=lambda n: SimpleNamespace(
+            insert=lambda row: (rows.append(row), SimpleNamespace(
+                execute=lambda: SimpleNamespace(data=[{"id": "x"}])))[1]))
+        save_recipe_to_queue(sb, {"name": "n", "meal_type": "lunch", **recipe}, "u", "url")
+        return rows[0]["tags"]
+
+    assert saved_tags(vegetarian=True, tags=["quick"]) == ["quick", "vegetarian"]
+    assert saved_tags(vegetarian=True, tags=["vegetarian"]) == ["vegetarian"]
+    assert saved_tags(vegetarian=False, tags=["quick"]) == ["quick"]
+    assert saved_tags(tags=["quick"]) == ["quick"]           # not answered: no guess
+    assert saved_tags(vegetarian=True) == ["vegetarian"]     # no tags key at all
+
+
 def test_servings_targets_and_fallback():
     """The formula is (lunches + dinners) * people, covered per meal type."""
     s = {"lunches": 5, "dinners": 3, "people": 2}

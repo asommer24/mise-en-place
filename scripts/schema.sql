@@ -288,6 +288,25 @@ ALTER TABLE meal_settings
 
 
 -- ---------------------------------------------------------------------------
+-- 6f. Let the web app edit a recipe's meal type, tags and servings
+--     The anon key is public, so keep this narrow: only those three columns
+--     are updatable (column grant), and the policy rejects values the planner
+--     can't use. Everything else on a recipe stays service-role-only.
+--     Re-runnable.
+-- ---------------------------------------------------------------------------
+REVOKE UPDATE ON recipes FROM anon;
+GRANT UPDATE (meal_type, tags, servings) ON recipes TO anon;
+
+DROP POLICY IF EXISTS "Public edit recipe basics" ON recipes;
+CREATE POLICY "Public edit recipe basics" ON recipes
+    FOR UPDATE
+    USING (true)
+    WITH CHECK (meal_type IN ('lunch', 'dinner')
+                AND servings BETWEEN 1 AND 25
+                AND cardinality(tags) <= 10);
+
+
+-- ---------------------------------------------------------------------------
 -- 7. Seed a few starter recipes so the app isn't empty
 --
 --    NOTE: the ON CONFLICT DO NOTHING below is a no-op — there is no unique

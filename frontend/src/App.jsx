@@ -69,7 +69,7 @@ function TagPill({ label, kind = "tag", on, onClick }) {
 
 // onTag/isOn turn the tag row into filter controls (Library tab). Without
 // them the card renders the old read-only two-tag summary.
-function RecipeCard({ recipe, onSwap, compact = false, onTag, isOn, query }) {
+function RecipeCard({ recipe, onSwap, onEdit, compact = false, onTag, isOn, query }) {
   const totalMins = (recipe.prep_time_mins || 0) + (recipe.cook_time_mins || 0);
   const interactive = !!onTag;
   return (
@@ -149,12 +149,20 @@ function RecipeCard({ recipe, onSwap, compact = false, onTag, isOn, query }) {
             borderRadius:"6px", cursor:"pointer"
           }}>swap ↕</button>
         )}
+        {onEdit && (
+          <button onClick={() => onEdit(recipe)} style={{
+            marginLeft:"auto", fontSize:"11px",
+            background:"rgba(200,168,122,0.1)", color:"#c8a87a",
+            border:"1px solid rgba(200,168,122,0.2)", padding:"4px 12px",
+            borderRadius:"6px", cursor:"pointer"
+          }}>edit</button>
+        )}
       </div>
     </div>
   );
 }
 
-function LibraryTab({ recipes }) {
+function LibraryTab({ recipes, onEdit }) {
   const [query, setQuery] = useState("");
   const [meals, setMeals] = useState([]);
   const [tags, setTags]   = useState([]);
@@ -318,7 +326,7 @@ function LibraryTab({ recipes }) {
         <div style={{ display:"flex", flexDirection:"column", gap:"8px",
           padding:"16px 0 40px" }}>
           {visible.map(r => (
-            <RecipeCard key={r.id} recipe={r} compact
+            <RecipeCard key={r.id} recipe={r} compact onEdit={onEdit}
               onTag={onTag} isOn={isOn} query={query} />
           ))}
         </div>
@@ -799,6 +807,139 @@ function GenerateModal({ initial, defaults, weekLabel, generating, status, onGen
   );
 }
 
+// Same limits as the "Public edit recipe basics" policy in schema.sql 6f. The
+// vegetarian tag counts toward the tag limit.
+const MAX_SERVINGS = 25;
+const MAX_TAGS = 10;
+
+// Edits the three recipe fields the planner depends on. Vegetarian is a switch
+// over the "vegetarian" tag, since the planner filters on that exact tag.
+function EditRecipeModal({ recipe, onSaved, onClose }) {
+  const [mealType, setMealType] = useState(recipe.meal_type);
+  const [servings, setServings] = useState(Math.min(recipe.servings || 4, MAX_SERVINGS));
+  const [vegetarian, setVegetarian] = useState((recipe.tags || []).includes("vegetarian"));
+  const [tags, setTags] = useState((recipe.tags || []).filter(t => t !== "vegetarian"));
+  const [draftTag, setDraftTag] = useState("");
+  const [status, setStatus] = useState("");
+
+  const tagCount = tags.length + (vegetarian ? 1 : 0);
+
+  const addTag = () => {
+    const t = draftTag.trim().toLowerCase();
+    if (t === "vegetarian") setVegetarian(true);
+    else if (t && !tags.includes(t)) setTags([...tags, t]);
+    setDraftTag("");
+  };
+
+  const save = async () => {
+    // Recipes ingested before the limit can already be over it.
+    if (tagCount > MAX_TAGS) {
+      setStatus(`A recipe can have at most ${MAX_TAGS} tags. Remove ${tagCount - MAX_TAGS}.`);
+      return;
+    }
+    setStatus("Saving…");
+    const { data, error } = await supabase.from("recipes")
+      .update({ meal_type: mealType, servings, tags: vegetarian ? [...tags, "vegetarian"] : tags })
+      .eq("id", recipe.id).select().maybeSingle();
+    if (error || !data) {
+      setStatus(`Couldn't save: ${error?.message || "not allowed (apply schema.sql 6f?)"}`);
+      return;
+    }
+    onSaved(data);
+  };
+
+  const row = { display:"flex", alignItems:"center", justifyContent:"space-between", gap:"16px",
+    padding:"12px 0", borderBottom:"1px solid rgba(200,168,122,0.15)" };
+  const label = { fontSize:"17px", fontWeight:"500", color:"#f5ede0" };
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(8,5,2,0.72)", zIndex:100,
+      display:"flex", alignItems:"center", justifyContent:"center", padding:"24px" }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="edit-title" style={{
+        width:"100%", maxWidth:"480px", maxHeight:"100%", overflowY:"auto",
+        background:"#1c140c", border:"1px solid rgba(200,168,122,0.3)", borderRadius:"16px",
+        padding:"28px 28px 24px", boxShadow:"0 24px 60px rgba(0,0,0,0.55)" }}>
+        <div style={{ fontSize:"11px", letterSpacing:"0.16em", textTransform:"uppercase",
+          color:"#a08560", marginBottom:"8px" }}>Edit recipe</div>
+        <h2 id="edit-title" style={{ fontFamily:"'Playfair Display',Georgia,serif",
+          fontSize:"22px", fontWeight:"700", color:"#f5ede0", lineHeight:"1.2",
+          margin:"0 0 12px" }}>{recipe.name}</h2>
+
+        <div style={{ ...row, borderTop:"1px solid rgba(200,168,122,0.15)" }}>
+          <div style={label}>Meal</div>
+          <div style={{ display:"flex", gap:"6px" }}>
+            {["lunch", "dinner"].map(m => (
+              <button key={m} aria-pressed={mealType === m} onClick={() => setMealType(m)} style={{
+                height:"40px", padding:"0 18px", borderRadius:"10px", fontSize:"15px",
+                fontFamily:BUTTON_FONT, cursor:"pointer",
+                border:"1px solid rgba(200,168,122,0.3)",
+                background: mealType === m ? "#c8a87a" : "transparent",
+                color: mealType === m ? "#120d07" : "#c8a87a",
+                fontWeight: mealType === m ? "600" : "400" }}>{m}</button>
+            ))}
+          </div>
+        </div>
+
+        <div style={row}>
+          <div>
+            <div style={label}>Servings</div>
+            {!recipe.servings && (
+              <div style={{ fontSize:"14px", color:"#a08560" }}>None saved; 4 is assumed.</div>
+            )}
+          </div>
+          <Stepper field={{ chip:"servings", min:1, max:MAX_SERVINGS }} value={servings} onChange={setServings} />
+        </div>
+
+        <div style={row}>
+          <div style={label}>Vegetarian</div>
+          <Toggle on={vegetarian} label="Vegetarian" onChange={setVegetarian} />
+        </div>
+
+        <div style={{ padding:"12px 0 4px" }}>
+          <div style={{ ...label, marginBottom:"8px" }}>
+            Other tags{" "}
+            <span style={{ fontSize:"14px", fontWeight:"400", color:"#a08560" }}>
+              ({tagCount} of {MAX_TAGS} used)
+            </span>
+          </div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:"6px", marginBottom:"10px" }}>
+            {tags.map(t => (
+              <button key={t} aria-label={`Remove ${t}`} onClick={() => setTags(tags.filter(x => x !== t))}
+                style={{ padding:"4px 10px", borderRadius:"20px", fontSize:"13px",
+                  fontFamily:BUTTON_FONT, cursor:"pointer", color:"#c8a87a",
+                  background:"rgba(200,168,122,0.1)", border:"1px solid rgba(200,168,122,0.25)" }}>
+                {t} ×
+              </button>
+            ))}
+            {!tags.length && <span style={{ fontSize:"14px", color:"#a08560" }}>None</span>}
+          </div>
+          <div style={{ display:"flex", gap:"8px" }}>
+            <input value={draftTag} onChange={e => setDraftTag(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && addTag()} aria-label="New tag"
+              placeholder="Add a tag, e.g. make-ahead" style={{
+                flex:1, height:"40px", padding:"0 12px", borderRadius:"8px", outline:"none",
+                background:"rgba(255,252,245,0.04)", border:"1px solid rgba(200,168,122,0.25)",
+                fontFamily:BUTTON_FONT, fontSize:"15px", color:"#f5ede0" }} />
+            <button onClick={addTag} style={{ height:"40px", padding:"0 16px", borderRadius:"8px",
+              fontFamily:BUTTON_FONT, fontSize:"15px", cursor:"pointer", color:"#c8a87a",
+              background:"transparent", border:"1px solid rgba(200,168,122,0.3)" }}>Add</button>
+          </div>
+        </div>
+
+        {status && <div style={{ fontSize:"14px", color:"#a08560", marginTop:"12px" }}>{status}</div>}
+
+        <div style={{ display:"flex", justifyContent:"flex-end", gap:"10px", marginTop:"22px" }}>
+          <button onClick={onClose} style={{ height:"48px", padding:"0 20px", borderRadius:"10px",
+            background:"transparent", border:"1px solid rgba(200,168,122,0.3)", color:"#c8a87a",
+            fontSize:"15px", cursor:"pointer", fontFamily:BUTTON_FONT }}>Cancel</button>
+          <button onClick={save} style={{ height:"48px", padding:"0 24px", borderRadius:"10px",
+            border:"none", background:"#c8a87a", color:"#120d07", fontSize:"16px",
+            fontWeight:"600", cursor:"pointer", fontFamily:BUTTON_FONT }}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ───────────────────────────────────────────────────────────────
 
 export default function MiseEnPlace() {
@@ -819,6 +960,7 @@ export default function MiseEnPlace() {
   const [triggerStatus, setTriggerStatus] = useState("");
   const [defaults, setDefaults] = useState(DEFAULT_SETTINGS);   // meal_settings row
   const [modalOpen, setModalOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState(null);   // recipe open in the edit dialog
   const triggerPollRef = useRef(null);
   const weekStart = planMonday();
 
@@ -910,7 +1052,9 @@ export default function MiseEnPlace() {
 
   const handleSwap = async (original, replacement) => {
     if (!plan) return;
-    const field = original.meal_type === "lunch" ? "lunches" : "dinners";
+    // Which list the recipe is in, not its meal_type: editing a recipe's meal
+    // type must not make a swap write to the wrong list.
+    const field = plan.lunches?.includes(original.id) ? "lunches" : "dinners";
     const nextIds = (plan[field] || []).map(id => id === original.id ? replacement.id : id);
     setPlan(p => ({ ...p, [field]: nextIds }));   // optimistic
     setSwapTarget(null);
@@ -1193,7 +1337,7 @@ export default function MiseEnPlace() {
             loading ? (
               <EmptyState>Loading recipes…</EmptyState>
             ) : (
-              <LibraryTab recipes={allRecipes} />
+              <LibraryTab recipes={allRecipes} onEdit={setEditTarget} />
             )
           )}
 
@@ -1278,7 +1422,7 @@ export default function MiseEnPlace() {
                         {i+1}
                       </div>
                       <div style={{ flex:1 }}>
-                        <RecipeCard recipe={r} />
+                        <RecipeCard recipe={r} onEdit={setEditTarget} />
                       </div>
                     </div>
                   ))}
@@ -1299,6 +1443,17 @@ export default function MiseEnPlace() {
           status={triggerStatus}
           onGenerate={handleTrigger}
           onClose={() => setModalOpen(false)}
+        />
+      )}
+
+      {editTarget && (
+        <EditRecipeModal
+          recipe={editTarget}
+          onSaved={row => {
+            setAllRecipes(rs => rs.map(r => r.id === row.id ? row : r));
+            setEditTarget(null);
+          }}
+          onClose={() => setEditTarget(null)}
         />
       )}
 

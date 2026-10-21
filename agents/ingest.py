@@ -101,6 +101,7 @@ Return ONLY valid JSON:
   "prep_time_mins": 15,
   "cook_time_mins": 30,
   "servings": 4,
+  "vegetarian": true or false,
   "tags": ["make-ahead", "healthy"]
 }
 
@@ -108,6 +109,10 @@ meal_type rules:
   - "lunch" if the dish is a bowl, salad, soup, wrap, grain dish, or anything
      described as meal-prep friendly or make-ahead
   - "dinner" for everything else
+
+vegetarian rules:
+  - true only if the recipe has no meat, poultry, fish or shellfish (eggs and
+     dairy are fine). false if it does, or if you can't tell.
 
 Valid ingredient categories: produce, protein, dairy, grain, bakery, pantry, condiment, frozen, other
 
@@ -211,6 +216,11 @@ def fetch_instagram_content(url: str) -> tuple[str, str]:
 def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
                          source_type: str) -> str:
     """Returns the new recipe ID."""
+    # The planner filters on the "vegetarian" tag, so don't leave it to Claude
+    # remembering to put it in tags: it answers the question explicitly.
+    tags = recipe_data.get("tags") or []
+    if recipe_data.get("vegetarian") is True and "vegetarian" not in tags:
+        tags = [*tags, "vegetarian"]
     row = {
         "name": recipe_data["name"],
         "description": recipe_data.get("description", ""),
@@ -222,7 +232,7 @@ def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
         "prep_time_mins": recipe_data.get("prep_time_mins"),
         "cook_time_mins": recipe_data.get("cook_time_mins"),
         "servings": recipe_data.get("servings", 4),
-        "tags": recipe_data.get("tags", []),
+        "tags": tags,
         "in_queue": True,
         "queue_priority": 10,  # user-submitted = high priority
     }
