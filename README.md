@@ -9,6 +9,10 @@ the web app, or share a post straight from Instagram with a one-tap iOS
 Shortcut. Each link is fetched and parsed into a structured recipe by Claude,
 then queued and prioritized for the next week's plan.
 
+**More documentation lives in [`docs/`](docs/):**
+[Settings tab](docs/SETTINGS.md) (what the defaults control) and
+[Tagging](docs/TAGGING.md) (how meal type, tags and servings get decided).
+
 ---
 
 ## Weekly Flow
@@ -48,7 +52,7 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 > **Generate** and **regenerate** open a dialog where those numbers can be
 > changed for that week only; they are stored on the plan
 > (`weekly_plans.settings`), never on the defaults. The Saturday cron always
-> uses the saved defaults.
+> uses the saved defaults. Details in [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ---
 
@@ -65,9 +69,10 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 the `increment_times_suggested` function (previously called but never defined,
 so `times_suggested` never incremented) and 7b tops the library up to 6 lunches
 and 4 vegetarian dinners. Also run **6d** (the `meal_settings` defaults table and
-`weekly_plans.settings`) and **6e** (the vegetarian switches); the app falls back
-to the defaults without them, but the Settings tab can't save. All four are
-safely re-runnable. Do *not* re-run section 7
+`weekly_plans.settings`) **6e** (the vegetarian switches) and **6f** (lets the web app edit a recipe's
+meal type, tags and servings). Without 6d/6e the app falls back to the defaults
+and the Settings tab can't save; without 6f the recipe **edit** button reports
+an error. All five are safely re-runnable. Do *not* re-run section 7
 — it has no unique constraint to conflict on, so it duplicates its recipes.
 
 ### 2. Todoist
@@ -146,11 +151,15 @@ recipe name → **Add**.
 
 A submitted **name** that already matches a library recipe is re-queued; an
 unknown name is added as a stub (default `meal_type: dinner`) for you to fill in
-on the web app.
+on the web app. Use **edit** on a recipe card (Library or Queue) to change its
+meal type, servings and tags; vegetarian is a switch over the `vegetarian` tag.
+How each of those gets decided, and when, is in [docs/TAGGING.md](docs/TAGGING.md).
 
 ### How Instagram link parsing works
 The ingest endpoint reads the post's **caption** (where the recipe text lives),
-then Claude turns it into a structured recipe. For Instagram it fetches the
+then Claude turns it into a structured recipe, including whether it is
+vegetarian (no meat, poultry, fish or shellfish), which becomes the `vegetarian`
+tag the planner filters on. For Instagram it fetches the
 public **`/embed/captioned/`** page — this works for posts (`/p/`), reels
 (`/reel/`), and IGTV (`/tv/`) with **no API key**, and any `?utm_source=…` query
 string on the link is stripped automatically. Plain `/embed/` is *not* used —
@@ -246,6 +255,9 @@ mise-en-place/
 │   ├── saturday_suggest.py   # Saturday cron: picks the week's recipes
 │   ├── sunday_shopping.py    # Sunday cron: shopping list to Todoist
 │   └── ingest.py             # FastAPI: POST /ingest adds recipes to the queue
+├── docs/
+│   ├── SETTINGS.md           # The Settings tab: what it controls and governs
+│   └── TAGGING.md            # How meal type, tags and servings get decided
 ├── test_agents.py            # Offline asserts: week math, JSON parsing, validation
 ├── scripts/
 │   └── schema.sql            # Supabase schema, RLS, views + seed recipes
