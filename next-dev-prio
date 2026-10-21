@@ -1,4 +1,4 @@
-1. Re-work the full list ; set # of guests, and then plan for leftovers 
+1. Update the code to have a set color palette with tokens 
 2. Add calendar view for this week ; with an assignment per night 
 3. Test multiple user function 
 4. Add support for tracking wish list of restaurants
