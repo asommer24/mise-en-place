@@ -69,7 +69,7 @@ function TagPill({ label, kind = "tag", on, onClick }) {
 
 // onTag/isOn turn the tag row into filter controls (Library tab). Without
 // them the card renders the old read-only two-tag summary.
-function RecipeCard({ recipe, onSwap, onEdit, onRemove, compact = false, onTag, isOn, query }) {
+function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, compact = false, onTag, isOn, query }) {
   const totalMins = (recipe.prep_time_mins || 0) + (recipe.cook_time_mins || 0);
   const interactive = !!onTag;
   return (
@@ -149,9 +149,11 @@ function RecipeCard({ recipe, onSwap, onEdit, onRemove, compact = false, onTag, 
             borderRadius:"6px", cursor:"pointer"
           }}>swap ↕</button>
         )}
-        {(onEdit || onRemove) && (
+        {(onEdit || onRemove || onQueue) && (
           <div style={{ marginLeft:"auto", display:"flex", gap:"6px" }}>
-            {[[onEdit, "edit", "Edit"], [onRemove, "remove", "Remove from queue:"]].map(
+            {[[onQueue && !recipe.in_queue ? onQueue : null, "add to queue", "Add to queue:"],
+              [onEdit, "edit", "Edit"],
+              [onRemove, "remove", "Remove from queue:"]].map(
               ([fn, text, aria]) => fn && (
                 <button key={text} aria-label={`${aria} ${recipe.name}`}
                   onClick={() => fn(recipe)} style={{
@@ -167,7 +169,7 @@ function RecipeCard({ recipe, onSwap, onEdit, onRemove, compact = false, onTag, 
   );
 }
 
-function LibraryTab({ recipes, onEdit }) {
+function LibraryTab({ recipes, onEdit, onQueue }) {
   const [query, setQuery] = useState("");
   const [meals, setMeals] = useState([]);
   const [tags, setTags]   = useState([]);
@@ -331,7 +333,7 @@ function LibraryTab({ recipes, onEdit }) {
         <div style={{ display:"flex", flexDirection:"column", gap:"8px",
           padding:"16px 0 40px" }}>
           {visible.map(r => (
-            <RecipeCard key={r.id} recipe={r} compact onEdit={onEdit}
+            <RecipeCard key={r.id} recipe={r} compact onEdit={onEdit} onQueue={onQueue}
               onTag={onTag} isOn={isOn} query={query} />
           ))}
         </div>
@@ -1090,16 +1092,16 @@ export default function MiseEnPlace() {
     if (data) setAllRecipes(data);
   };
 
-  // Takes it off the queue only; the recipe stays in the library.
-  const handleRemoveFromQueue = async (r) => {
-    const setQueued = on =>
-      setAllRecipes(rs => rs.map(x => x.id === r.id ? { ...x, in_queue: on } : x));
-    setQueued(false);   // optimistic
-    const { error } = await supabase.from("recipes").update({ in_queue: false }).eq("id", r.id);
+  // Puts a library recipe on the queue, or takes it off. Either way the recipe
+  // stays in the library.
+  const setQueuedState = async (r, on) => {
+    const apply = v =>
+      setAllRecipes(rs => rs.map(x => x.id === r.id ? { ...x, in_queue: v } : x));
+    apply(on);   // optimistic
+    const { error } = await supabase.from("recipes").update({ in_queue: on }).eq("id", r.id);
     if (error) {
-      setQueued(true);
-      setQueueFeedback(`⚠️ Couldn't remove it: ${error.message}`);
-      setTimeout(() => setQueueFeedback(""), 4000);
+      apply(!on);
+      window.alert(`Couldn't ${on ? "queue" : "remove"} "${r.name}": ${error.message}`);
     }
   };
 
@@ -1107,8 +1109,11 @@ export default function MiseEnPlace() {
     const input = queueInput.trim();
     if (!input) return;
 
-    const isUrl = /^https?:\/\//i.test(input);
-    const payload = isUrl ? { url: input } : { name: input };
+    if (!/^https?:\/\//i.test(input)) {
+      setQueueFeedback("⚠️ Paste a recipe link (starting with http).");
+      setTimeout(() => setQueueFeedback(""), 4000);
+      return;
+    }
 
     setQueueFeedback("⏳ Adding…");
     try {
@@ -1118,7 +1123,7 @@ export default function MiseEnPlace() {
           "Content-Type": "application/json",
           "X-Ingest-Token": import.meta.env.VITE_INGEST_TOKEN,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ url: input }),
       });
       const data = await resp.json().catch(() => ({}));
       if (resp.ok) {
@@ -1361,7 +1366,8 @@ export default function MiseEnPlace() {
             loading ? (
               <EmptyState>Loading recipes…</EmptyState>
             ) : (
-              <LibraryTab recipes={allRecipes} onEdit={setEditTarget} />
+              <LibraryTab recipes={allRecipes} onEdit={setEditTarget}
+                onQueue={r => setQueuedState(r, true)} />
             )
           )}
 
@@ -1383,8 +1389,10 @@ export default function MiseEnPlace() {
               </h2>
               <p style={{ fontSize:"13px", color:"#806040", marginBottom:"20px" }}>
                 These recipes are prioritised for upcoming weeks. Add one below by
-                pasting an Instagram link or a recipe name. Anything already in
-                your library or queue won't be added twice.
+                pasting a recipe link. Anything already in your library or queue
+                won't be added twice. To queue a recipe that's already in the
+                library, use <b style={{ fontWeight:"500" }}>add to queue</b> on its
+                card in the Library tab.
               </p>
 
               {/* Add manually */}
@@ -1400,7 +1408,7 @@ export default function MiseEnPlace() {
                     value={queueInput}
                     onChange={e => setQueueInput(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && handleQueueSubmit()}
-                    placeholder="Paste a recipe link or name…"
+                    placeholder="Paste a recipe link…"
                     style={{
                       flex:1, background:"rgba(255,252,245,0.04)",
                       border:"1px solid rgba(200,168,122,0.15)",
@@ -1431,7 +1439,7 @@ export default function MiseEnPlace() {
               ) : queued.length === 0 ? (
                 <div style={{ textAlign:"center", padding:"40px",
                   color:"#5a4030", fontSize:"14px" }}>
-                  Queue is empty — paste a link or recipe name above to add one!
+                  Queue is empty — paste a recipe link above to add one!
                 </div>
               ) : (
                 <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
@@ -1447,7 +1455,7 @@ export default function MiseEnPlace() {
                       </div>
                       <div style={{ flex:1 }}>
                         <RecipeCard recipe={r} onEdit={setEditTarget}
-                          onRemove={handleRemoveFromQueue} />
+                          onRemove={r => setQueuedState(r, false)} />
                       </div>
                     </div>
                   ))}

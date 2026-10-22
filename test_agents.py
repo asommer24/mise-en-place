@@ -126,6 +126,8 @@ def test_validate_selection():
 
 def test_vegetarian_toggles():
     """Each toggle filters its own meal type, and the prompt says so."""
+    rows = []   # what every query "returns"
+
     class Query:
         def __init__(self, filtered):
             self.filtered, self.meal = filtered, None
@@ -139,7 +141,7 @@ def test_vegetarian_toggles():
             self.filtered.append(self.meal)
             return self
         def order(self, *a, **k): return self
-        def execute(self): return SimpleNamespace(data=[])
+        def execute(self): return SimpleNamespace(data=rows)
 
     def filtered_for(**flags):
         got = []
@@ -151,6 +153,12 @@ def test_vegetarian_toggles():
     assert filtered_for(vegetarian_lunches=True) == ["lunch", "dinner"]
     assert filtered_for(vegetarian_dinners=False) == []
     assert filtered_for(vegetarian_lunches=True, vegetarian_dinners=False) == ["lunch"]
+
+    # A recipe with no ingredients (a leftover name-only stub) is never planned.
+    rows[:] = [{"id": "stub", "ingredients": []}, {"id": "real", "ingredients": [{"name": "rice"}]}]
+    got = fetch_recipes(SimpleNamespace(table=lambda n: Query([])), DEFAULT_SETTINGS)
+    assert [r["id"] for r in got["lunches"]] == ["real"], got
+    assert [r["id"] for r in got["dinners"]] == ["real"], got
 
     on, off = DEFAULT_SETTINGS, {**DEFAULT_SETTINGS, "vegetarian_dinners": False}
     assert "vegetarian" in build_prompt(10, 6, on)
@@ -179,8 +187,8 @@ def test_ingest_tags_vegetarian_explicitly():
 
 class FakeSB:
     """Just enough of the Supabase client for /ingest's duplicate handling."""
-    def __init__(self, dup=None, rpc_error=False, partial=None):
-        self.dup, self.rpc_error, self.partial = dup, rpc_error, partial or []
+    def __init__(self, dup=None, rpc_error=False):
+        self.dup, self.rpc_error = dup, rpc_error
         self.updates, self.rpc_calls = [], []
 
     def rpc(self, fn, args):
@@ -191,19 +199,13 @@ class FakeSB:
             data=[self.dup] if self.dup else []))
 
     def table(self, name):
-        sb, state = self, {"select": False}
+        sb = self
 
         class Table:
-            def select(self, *a): state["select"] = True; return self
             def insert(self, row): return self
             def update(self, vals): sb.updates.append((name, vals)); return self
             def eq(self, *a): return self
-            def ilike(self, *a): return self
-            def limit(self, *a): return self
-            def execute(self):
-                if name == "recipes" and state["select"]:
-                    return SimpleNamespace(data=sb.partial)
-                return SimpleNamespace(data=[{"id": "sub1"}])
+            def execute(self): return SimpleNamespace(data=[{"id": "sub1"}])
         return Table()
 
 
@@ -249,15 +251,12 @@ def test_duplicate_handling():
         assert ("recipe_submissions", {"status": "duplicate", "recipe_id": "r1",
                                        "processed_at": sb.updates[0][1]["processed_at"]}) == sb.updates[0]
 
-        # name only: exact match via the RPC, else the looser "contains" match
-        sb = FakeSB(dup=queued)
+        # links only: a name-only submission is refused, not turned into a stub
+        sb = FakeSB()
         ing.get_sb = lambda: sb
-        r = client.post("/ingest", headers=headers, json={"name": "lemon orzo salad!"})
-        assert r.json()["duplicate"] is True
-        sb = FakeSB(partial=[shelved])
-        ing.get_sb = lambda: sb
-        r = client.post("/ingest", headers=headers, json={"name": "orzo"})
-        assert "Queued it again" in r.json()["message"]
+        r = client.post("/ingest", headers=headers, json={"name": "Lemon Orzo Salad"})
+        assert r.status_code == 400, r.text
+        assert sb.updates == [] and sb.rpc_calls == []
     finally:
         ing.get_sb, ing.fetch_instagram_content = real_get_sb, real_fetch
 

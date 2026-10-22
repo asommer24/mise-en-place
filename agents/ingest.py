@@ -7,12 +7,9 @@ Recipes reach the agent by being submitted to POST /ingest — pasted into the
 web app's Queue box. There is no official Instagram API for reading a private
 "Saved" collection, so recipes are submitted per-post rather than auto-pulled.
 
-Handles two payload shapes:
-  1. {"url": "https://instagram.com/p/..."}  → fetch, extract recipe, queue it
-  2. {"name": "Lemon Orzo Salad"}            → match existing library or queue a stub
-
-Either way a submission that duplicates a library recipe (same source link or
-same normalised name) is not added again: see find_duplicate().
+Takes {"url": "https://instagram.com/p/..."} → fetch, extract recipe, queue it.
+A link that duplicates a library recipe (same source link, or same normalised
+name once parsed) is not added again: see find_duplicate().
 
 Auth: every request must send header  X-Ingest-Token: <INGEST_TOKEN>.
 
@@ -228,8 +225,7 @@ def find_duplicate(sb, url: str | None = None, name: str | None = None) -> dict 
 
 
 def duplicate_response(sb, dup: dict) -> dict:
-    """Already queued: say so. In the library but not queued: queue it again,
-    which is what a name-only submission has always done."""
+    """Already queued: say so. In the library but not queued: queue it again."""
     if dup["in_queue"]:
         message = f'"{dup["name"]}" is already in your queue.'
     else:
@@ -275,7 +271,6 @@ def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
 
 class IngestRequest(BaseModel):
     url: str | None = None
-    name: str | None = None
     submitted_by: str = "web"
 
 
@@ -328,7 +323,7 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
             }).eq("id", sub_id).execute()
             raise HTTPException(
                 status_code=422,
-                detail="Couldn't read that link. Try the recipe name instead.",
+                detail="Couldn't read that link. Try a different link.",
             )
 
         recipe, extract_error = extract_recipe_from_text(content, url)
@@ -340,7 +335,7 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
             }).eq("id", sub_id).execute()
             raise HTTPException(
                 status_code=422,
-                detail="Couldn't parse a recipe from that link. Try the recipe name instead.",
+                detail="Couldn't parse a recipe from that link. Try a different link.",
             )
 
         # Different link, same recipe: catch it by the name Claude extracted.
@@ -359,43 +354,9 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
         return {"ok": True, "recipe_id": recipe_id, "name": recipe["name"],
                 "message": f'Added "{recipe["name"]}" to the queue.'}
 
-    # ── Plain text recipe name ──
-    if req.name:
-        name = req.name.strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="Empty recipe name")
-
-        # Exact (normalised) name first, then the looser "contains" match that
-        # lets a partial name find a library recipe.
-        dup = find_duplicate(sb, name=name)
-        if not dup:
-            partial = (
-                sb.table("recipes")
-                .select("id, name, in_queue")
-                .ilike("name", f"%{name[:50]}%")
-                .limit(1)
-                .execute()
-            ).data
-            dup = partial[0] if partial else None
-        if dup:
-            return duplicate_response(sb, dup)
-
-        # Create a stub recipe
-        stub = {
-            "name": name[:100],
-            "meal_type": "dinner",   # default; user can update on web app
-            "description": "Added via web — fill in details on the web app.",
-            "ingredients": [],
-            "source_type": req.submitted_by,
-            "in_queue": True,
-            "queue_priority": 8,
-        }
-        res = sb.table("recipes").insert(stub).execute()
-        return {"ok": True, "recipe_id": res.data[0]["id"], "name": stub["name"],
-                "message": f'Added "{name[:50]}" to the queue as a stub. '
-                           f'Fill in ingredients on the web app.'}
-
-    raise HTTPException(status_code=400, detail="Provide either 'url' or 'name'")
+    # A name-only submission used to create a stub with no ingredients, which
+    # nothing in the app could fill in. Links only.
+    raise HTTPException(status_code=400, detail="Provide a recipe link as 'url'")
 
 
 class PlanSettings(BaseModel):
