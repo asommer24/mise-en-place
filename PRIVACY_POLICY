@@ -23,8 +23,8 @@ No behavioral tracking, analytics, advertising identifiers, or personal contact
 information is collected.
 
 3. How Recipes Are Submitted
-Recipes are added by pasting a link (usually Instagram) or a recipe name into
-the web app's Queue page, which sends it to the Service's ingest endpoint. The
+Recipes are added by pasting a link (usually Instagram) into the web app's Queue
+page, which sends it to the Service's ingest endpoint. The
 linked page/caption is fetched and parsed into a structured recipe. We do not
 log in to, or access, any user's Instagram account; only the content of links
 you explicitly submit is fetched.
@@ -56,4 +56,4 @@ the most recent revision.
 
 Mise en Place · Privacy Policy · Stored at /PRIVACY_POLICY in the project repository
 
-Updated on October 21, 2026
+Updated on October 22, 2026

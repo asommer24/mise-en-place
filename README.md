@@ -4,8 +4,7 @@ Picks make-ahead lunches + vegetarian dinners every Saturday, enough servings
 for the week, and shows them on a web app where either of you can swap recipes, then builds a categorized
 shopping list in Todoist Sunday morning.
 
-Add recipes from the web app's Queue tab by pasting a link or a
-recipe name. Each link is fetched and parsed into a structured recipe by Claude,
+Add recipes from the web app's Queue tab by pasting a recipe link. Each link is fetched and parsed into a structured recipe by Claude,
 then queued and prioritized for the next week's plan. Anything already in the
 library or queue isn't added twice.
 
@@ -20,7 +19,6 @@ library or queue isn't added twice.
 
 ```
 Anytime         →  Paste an Instagram link in the Queue tab → recipe parsed → added to queue
-                →  Or type a recipe name        → stub added to queue
 
 Saturday 9 AM   →  Claude picks lunches + vegetarian dinners from library + queue
                    to cover the week's servings (see below)
@@ -139,17 +137,17 @@ before the policy was added.
 
 ## Adding Recipes
 
-Recipes are added from the web app: open the **Queue** tab → paste an Instagram
-link or a recipe name → **Add**. That is the only way in. A submission that
-matches a recipe already in the library or queue is not added again, and a
-queued recipe can be taken off the queue with **remove**. How duplicates are
-detected and what each case does is in [docs/QUEUE.md](docs/QUEUE.md).
+Recipes are added from the web app: open the **Queue** tab → paste a recipe link
+(Instagram or any recipe page) → **Add**. That is the only way in, and it takes
+links only. A link that matches a recipe already in the library or queue is not
+added again. A queued recipe can be taken off the queue with **remove**, and a
+library recipe can be put back with **add to queue** on its Library card. How
+duplicates are detected and what each case does is in
+[docs/QUEUE.md](docs/QUEUE.md).
 
-An unknown **name** is added as a stub (default `meal_type: dinner`) for you to
-fill in on the web app. Use **edit** on a recipe card (Library or Queue) to change
-its meal type, servings and tags; vegetarian is a switch over the `vegetarian`
-tag. How each of those gets decided, and when, is in
-[docs/TAGGING.md](docs/TAGGING.md).
+Use **edit** on a recipe card (Library or Queue) to change its meal type,
+servings and tags; vegetarian is a switch over the `vegetarian` tag. How each of
+those gets decided, and when, is in [docs/TAGGING.md](docs/TAGGING.md).
 
 ### How Instagram link parsing works
 The ingest endpoint reads the post's **caption** (where the recipe text lives),
@@ -162,8 +160,8 @@ string on the link is stripped automatically. Plain `/embed/` is *not* used —
 it returns only page chrome (likes/handle) without the caption.
 
 If a caption is sparse or the embed is unavailable, set the optional
-`INSTAGRAM_SCRAPER_API_KEY` (RapidAPI) for richer parsing, or just submit the
-recipe **name** instead (`{"name": "..."}`), which skips fetching entirely.
+`INSTAGRAM_SCRAPER_API_KEY` (RapidAPI) for richer parsing, or try a different
+link to the same recipe.
 
 ---
 
