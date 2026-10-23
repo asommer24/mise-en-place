@@ -70,10 +70,12 @@ so `times_suggested` never incremented) and 7b tops the library up to 6 lunches
 and 4 vegetarian dinners. Also run **6d** (the `meal_settings` defaults table and
 `weekly_plans.settings`), **6e** (the vegetarian switches), **6f** (lets the web
 app edit a recipe's meal type, tags and servings and remove it from the queue)
-and **6g** (duplicate detection). Without 6d/6e the app falls back to the
-defaults and the Settings tab can't save; without 6f the recipe **edit** and
-queue **remove** buttons report an error; without 6g nothing stops a duplicate
-being added. All seven are safely re-runnable. Do *not* re-run section 7
+**6g** (duplicate detection) and **6h** (holds a recipe while you decide what to
+do about a name clash). Without 6d/6e the app falls back to the defaults and the
+Settings tab can't save; without 6f the recipe **edit** and queue **remove**
+buttons report an error; without 6g nothing stops a duplicate being added;
+without 6h a name clash is treated as a plain duplicate instead of asking you.
+All eight are safely re-runnable. Do *not* re-run section 7
 — it has no unique constraint to conflict on, so it duplicates its recipes.
 
 ### 2. Todoist
@@ -139,8 +141,9 @@ before the policy was added.
 
 Recipes are added from the web app: open the **Queue** tab → paste a recipe link
 (Instagram or any recipe page) → **Add**. That is the only way in, and it takes
-links only. A link that matches a recipe already in the library or queue is not
-added again. A queued recipe can be taken off the queue with **remove**, and a
+links only. A link that is already in the library or queue is not added again,
+and a new link whose recipe has the same name as one you have asks whether to
+replace the old one, keep both, or use the old one. A queued recipe can be taken off the queue with **remove**, and a
 library recipe can be put back with **add to queue** on its Library card. How
 duplicates are detected and what each case does is in
 [docs/QUEUE.md](docs/QUEUE.md).
