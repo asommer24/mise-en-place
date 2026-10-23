@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS recipe_submissions (
     submitted_by    TEXT        NOT NULL,       -- phone number (E.164)
     raw_message     TEXT        NOT NULL,       -- original SMS text
     parsed_url      TEXT,                       -- extracted Instagram/URL
-    status          TEXT        DEFAULT 'pending',  -- 'pending'|'processing'|'added'|'duplicate'|'failed'
+    status          TEXT        DEFAULT 'pending',  -- 'pending'|'processing'|'needs_decision'|'added'|'duplicate'|'failed'
     error_detail    TEXT,                       -- populated on failure: fetch/parse/extraction error
     recipe_id       UUID        REFERENCES recipes(id),
     submitted_at    TIMESTAMPTZ DEFAULT NOW(),
@@ -323,35 +323,72 @@ CREATE POLICY "Public edit recipe basics" ON recipes
 --                   Unique: one row per link.
 --       name_key    identifies the RECIPE NAME: lower-cased, punctuation and
 --                   spacing collapsed ("Lemon  Orzo Salad!" = "lemon orzo
---                   salad"). Not unique, since two recipes can share a name;
---                   the ingest endpoint treats a match as a duplicate.
+--                   salad"). Letters outside a-z (accents, other scripts) are
+--                   kept as they are, so "Pâté" and "Pt" stay different. Not
+--                   unique, since two recipes can share a name. When a NEW
+--                   link has the same name as an existing recipe, the web app
+--                   asks what to do (replace, keep both, or use the old one).
 --
---     find_duplicate_recipe() is what the ingest endpoint calls. Re-runnable.
+--     find_duplicate_recipe() is what the ingest endpoint calls. Recipes with
+--     no ingredients never match by name: they can't be planned, so they
+--     shouldn't block a real recipe from being added.
+--
+--     Re-runnable, and safe to run again after the key rules change: the two
+--     generated columns are dropped and re-added so every row is recomputed.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION recipe_name_key(p_name TEXT) RETURNS TEXT AS $$
-    -- NULLIF: a name with no a-z/0-9 at all (e.g. all non-Latin) gets no key
-    -- rather than a shared empty one that would match every other such name.
-    SELECT NULLIF(btrim(regexp_replace(lower(p_name), '[^a-z0-9]+', ' ', 'g')), '');
+    -- NULLIF: a name with no letters or digits at all gets no key rather than a
+    -- shared empty one that would match every other such name.
+    SELECT NULLIF(btrim(regexp_replace(lower(p_name), '[^a-z0-9\u0080-￿]+', ' ', 'g')), '');
 $$ LANGUAGE sql IMMUTABLE;
 
 CREATE OR REPLACE FUNCTION recipe_source_key(p_url TEXT) RETURNS TEXT AS $$
+    -- The Instagram pattern is anchored to the host, so a URL that merely
+    -- contains "instagram.com/p/..." somewhere (a redirector, another site)
+    -- is not mistaken for a post.
     SELECT CASE
         WHEN p_url IS NULL OR btrim(p_url) = '' THEN NULL
-        WHEN p_url ~* 'instagram\.com/([A-Za-z0-9_.]+/)?(p|reel|reels|tv)/[A-Za-z0-9_-]+'
+        WHEN btrim(p_url) ~* '^(https?://)?([a-z0-9-]+\.)*instagram\.com/([A-Za-z0-9_.]+/)?(p|reel|reels|tv)/[A-Za-z0-9_-]+'
             THEN 'instagram:' || (regexp_match(
-                p_url,
-                'instagram\.com/(?:[A-Za-z0-9_.]+/)?(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)',
+                btrim(p_url),
+                '^(?:https?://)?(?:[a-z0-9-]+\.)*instagram\.com/(?:[A-Za-z0-9_.]+/)?(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)',
                 'i'))[1]
         ELSE regexp_replace(lower(split_part(btrim(p_url), '#', 1)),
                             '^https?://(www\.)?|/+$', '', 'g')
     END;
 $$ LANGUAGE sql IMMUTABLE;
 
+-- Drop first so a changed rule recomputes the stored values (and the index on
+-- source_key, created below, goes with its column).
 ALTER TABLE recipes
-    ADD COLUMN IF NOT EXISTS source_key TEXT GENERATED ALWAYS AS (recipe_source_key(source_url)) STORED,
-    ADD COLUMN IF NOT EXISTS name_key   TEXT GENERATED ALWAYS AS (recipe_name_key(name)) STORED;
+    DROP COLUMN IF EXISTS source_key,
+    DROP COLUMN IF EXISTS name_key;
+ALTER TABLE recipes
+    ADD COLUMN source_key TEXT GENERATED ALWAYS AS (recipe_source_key(source_url)) STORED,
+    ADD COLUMN name_key   TEXT GENERATED ALWAYS AS (recipe_name_key(name)) STORED;
 
 CREATE INDEX IF NOT EXISTS recipes_name_key_idx ON recipes (name_key);
+
+-- Best match for a submission: the same link beats the same name. Created
+-- before the unique index below, so that if the index fails (existing
+-- duplicate links) the lookup still exists. Dropped first because the columns
+-- it returns changed (source_url was added), which CREATE OR REPLACE refuses.
+DROP FUNCTION IF EXISTS find_duplicate_recipe(TEXT, TEXT);
+CREATE FUNCTION find_duplicate_recipe(p_url TEXT, p_name TEXT DEFAULT NULL)
+RETURNS TABLE (id UUID, name TEXT, in_queue BOOLEAN, source_url TEXT, matched_on TEXT) AS $$
+    SELECT m.id, m.name, m.in_queue, m.source_url, m.matched_on FROM (
+        SELECT r.id, r.name, r.in_queue, r.source_url, 'url'::text AS matched_on
+          FROM recipes r
+         WHERE p_url IS NOT NULL AND r.source_key = recipe_source_key(p_url)
+        UNION ALL
+        SELECT r.id, r.name, r.in_queue, r.source_url, 'name'::text
+          FROM recipes r
+         WHERE p_name IS NOT NULL AND r.name_key = recipe_name_key(p_name)
+           AND r.ingredients <> '[]'::jsonb
+    ) m
+    ORDER BY (m.matched_on = 'url') DESC
+    LIMIT 1;
+$$ LANGUAGE sql STABLE;
 
 -- If this fails, two recipes already share a link. Find them with:
 --   SELECT source_key, array_agg(name) FROM recipes
@@ -360,21 +397,14 @@ CREATE INDEX IF NOT EXISTS recipes_name_key_idx ON recipes (name_key);
 CREATE UNIQUE INDEX IF NOT EXISTS recipes_source_key_uniq
     ON recipes (source_key) WHERE source_key IS NOT NULL;
 
--- Best match for a submission: the same link beats the same name.
-CREATE OR REPLACE FUNCTION find_duplicate_recipe(p_url TEXT, p_name TEXT DEFAULT NULL)
-RETURNS TABLE (id UUID, name TEXT, in_queue BOOLEAN, matched_on TEXT) AS $$
-    SELECT m.id, m.name, m.in_queue, m.matched_on FROM (
-        SELECT r.id, r.name, r.in_queue, 'url'::text AS matched_on
-          FROM recipes r
-         WHERE p_url IS NOT NULL AND r.source_key = recipe_source_key(p_url)
-        UNION ALL
-        SELECT r.id, r.name, r.in_queue, 'name'::text
-          FROM recipes r
-         WHERE p_name IS NOT NULL AND r.name_key = recipe_name_key(p_name)
-    ) m
-    ORDER BY (m.matched_on = 'url') DESC
-    LIMIT 1;
-$$ LANGUAGE sql STABLE;
+
+-- ---------------------------------------------------------------------------
+-- 6h. Park a parsed recipe while the user decides what to do about a name clash
+--     When a NEW link parses to the same name as an existing recipe, the endpoint
+--     stores the parsed recipe here (status 'needs_decision') instead of
+--     re-fetching and re-parsing the link once the user has chosen. Re-runnable.
+-- ---------------------------------------------------------------------------
+ALTER TABLE recipe_submissions ADD COLUMN IF NOT EXISTS parsed_recipe JSONB;
 
 
 -- ---------------------------------------------------------------------------

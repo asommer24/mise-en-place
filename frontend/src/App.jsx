@@ -814,6 +814,93 @@ function GenerateModal({ initial, defaults, weekLabel, generating, status, onGen
   );
 }
 
+// A new link parsed to the same name as a recipe we already have. Three ways out;
+// each button carries the choice out immediately. Closing leaves things as they
+// were (nothing added, nothing queued).
+function ConflictModal({ conflict, onResolve, onClose }) {
+  const { existing, incoming } = conflict;
+  const [label, setLabel] = useState(incoming.label);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const choose = async (action) => {
+    setBusy(true);
+    setError("");
+    const err = await onResolve(action, label.trim());
+    if (err) { setError(err); setBusy(false); }
+  };
+
+  const keepName = `${incoming.name} (${label.trim() || incoming.label})`;
+  const options = [
+    { action:"replace", title:"Replace the old recipe", button:"Replace",
+      text:"Overwrite it with the new one and queue it. Past plans that used it keep working." },
+    { action:"keep_both", title:"Keep both", button:"Keep both",
+      text:`Add the new one as “${keepName}”.`, extra: (
+        <input value={label} onChange={e => setLabel(e.target.value)} maxLength={40}
+          aria-label="Label added to the new recipe's name" style={{
+            width:"100%", height:"40px", padding:"0 12px", borderRadius:"8px", outline:"none",
+            marginTop:"8px", background:"rgba(255,252,245,0.04)",
+            border:"1px solid rgba(200,168,122,0.25)", fontFamily:BUTTON_FONT,
+            fontSize:"15px", color:"#f5ede0" }} />
+      ) },
+    { action:"use_existing", title:"Use the old recipe", button:"Use old",
+      text:"Skip the new link and queue the existing recipe instead." },
+  ];
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(8,5,2,0.72)", zIndex:100,
+      display:"flex", alignItems:"center", justifyContent:"center", padding:"24px" }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="conflict-title" style={{
+        width:"100%", maxWidth:"480px", maxHeight:"100%", overflowY:"auto",
+        background:"#1c140c", border:"1px solid rgba(200,168,122,0.3)", borderRadius:"16px",
+        padding:"28px 28px 24px", boxShadow:"0 24px 60px rgba(0,0,0,0.55)" }}>
+        <div style={{ fontSize:"11px", letterSpacing:"0.16em", textTransform:"uppercase",
+          color:"#a08560", marginBottom:"8px" }}>Same name, different link</div>
+        <h2 id="conflict-title" style={{ fontFamily:"'Playfair Display',Georgia,serif",
+          fontSize:"22px", fontWeight:"700", color:"#f5ede0", lineHeight:"1.2",
+          margin:"0 0 8px" }}>{existing.name}</h2>
+        <p style={{ fontSize:"15px", lineHeight:"1.5", color:"#a08560", margin:"0 0 16px" }}>
+          This is already in your library
+          {existing.source ? ` (from ${existing.source})` : ""}
+          {existing.in_queue ? " and in your queue" : ""}. The link you pasted
+          {incoming.label ? ` (${incoming.label})` : ""} is a recipe with the same name.
+        </p>
+
+        <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+          {options.map(o => (
+            <div key={o.action} style={{ display:"flex", alignItems:"flex-start", gap:"14px",
+              padding:"12px 14px", border:"1px solid rgba(200,168,122,0.18)", borderRadius:"12px" }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:"17px", fontWeight:"500", color:"#f5ede0" }}>{o.title}</div>
+                <div style={{ fontSize:"14px", color:"#a08560", marginTop:"2px" }}>{o.text}</div>
+                {o.extra}
+              </div>
+              <button disabled={busy} onClick={() => choose(o.action)} style={{
+                height:"44px", padding:"0 16px", borderRadius:"10px", flexShrink:0,
+                border:"1px solid rgba(200,168,122,0.3)", fontFamily:BUTTON_FONT, fontSize:"15px",
+                background: o.action === "replace" ? "#c8a87a" : "transparent",
+                color: o.action === "replace" ? "#120d07" : "#c8a87a",
+                fontWeight: o.action === "replace" ? "600" : "400",
+                cursor: busy ? "default" : "pointer", opacity: busy ? 0.45 : 1,
+              }}>{o.button}</button>
+            </div>
+          ))}
+        </div>
+
+        {error && <div style={{ fontSize:"14px", color:"#e0a080", marginTop:"12px" }}>{error}</div>}
+
+        <div style={{ display:"flex", justifyContent:"flex-end", marginTop:"18px" }}>
+          <button onClick={onClose} disabled={busy} style={{ background:"none", border:"none",
+            color:"#a08560", fontSize:"14px", fontFamily:BUTTON_FONT, cursor:"pointer",
+            textDecoration:"underline", textUnderlineOffset:"3px" }}>
+            Close without adding
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Same limits as the "Public edit recipe basics" policy in schema.sql 6f. The
 // vegetarian tag counts toward the tag limit.
 const MAX_SERVINGS = 25;
@@ -968,6 +1055,7 @@ export default function MiseEnPlace() {
   const [defaults, setDefaults] = useState(DEFAULT_SETTINGS);   // meal_settings row
   const [modalOpen, setModalOpen] = useState(false);
   const [editTarget, setEditTarget] = useState(null);   // recipe open in the edit dialog
+  const [conflict, setConflict] = useState(null);       // /ingest reply awaiting a name-clash decision
   const triggerPollRef = useRef(null);
   const weekStart = planMonday();
 
@@ -1105,11 +1193,37 @@ export default function MiseEnPlace() {
     }
   };
 
+  // Answers the name-clash dialog. Returns an error message to show in it, or
+  // null once the choice has been carried out.
+  const resolveConflict = async (action, label) => {
+    try {
+      const resp = await fetch(`${import.meta.env.VITE_INGEST_URL}/ingest/resolve`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Ingest-Token": import.meta.env.VITE_INGEST_TOKEN,
+        },
+        body: JSON.stringify({ submission_id: conflict.submission_id, action, label }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) return data.detail || "Couldn't do that. Try again.";
+      setConflict(null);
+      setQueueFeedback(`✅ ${data.message}`);
+      setTimeout(() => setQueueFeedback(""), 4000);
+      loadRecipes();
+      return null;
+    } catch {
+      return "Network error — is the ingest service running?";
+    }
+  };
+
   const handleQueueSubmit = async () => {
     const input = queueInput.trim();
     if (!input) return;
 
-    if (!/^https?:\/\//i.test(input)) {
+    // Anywhere in the text: a pasted share message has the link inside it, and
+    // the server picks the URL out.
+    if (!/https?:\/\/\S/i.test(input)) {
       setQueueFeedback("⚠️ Paste a recipe link (starting with http).");
       setTimeout(() => setQueueFeedback(""), 4000);
       return;
@@ -1126,7 +1240,12 @@ export default function MiseEnPlace() {
         body: JSON.stringify({ url: input }),
       });
       const data = await resp.json().catch(() => ({}));
-      if (resp.ok) {
+      if (resp.ok && data.needs_decision) {
+        // Same name as a recipe we have, from a different link: ask what to do.
+        setConflict(data);
+        setQueueFeedback("");
+        setQueueInput("");
+      } else if (resp.ok) {
         setQueueFeedback(`${data.duplicate ? "ℹ️" : "✅"} ${data.message || "Added to queue!"}`);
         setQueueInput("");
         loadRecipes();   // the queue list comes from state, not from the response
@@ -1476,6 +1595,14 @@ export default function MiseEnPlace() {
           status={triggerStatus}
           onGenerate={handleTrigger}
           onClose={() => setModalOpen(false)}
+        />
+      )}
+
+      {conflict && (
+        <ConflictModal
+          conflict={conflict}
+          onResolve={resolveConflict}
+          onClose={() => setConflict(null)}
         />
       )}
 

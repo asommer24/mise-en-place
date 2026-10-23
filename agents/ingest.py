@@ -8,8 +8,9 @@ web app's Queue box. There is no official Instagram API for reading a private
 "Saved" collection, so recipes are submitted per-post rather than auto-pulled.
 
 Takes {"url": "https://instagram.com/p/..."} → fetch, extract recipe, queue it.
-A link that duplicates a library recipe (same source link, or same normalised
-name once parsed) is not added again: see find_duplicate().
+A link already in the library is not added again (see find_duplicate()). A new
+link whose parsed name matches an existing recipe stops for a decision, which
+POST /ingest/resolve carries out.
 
 Auth: every request must send header  X-Ingest-Token: <INGEST_TOKEN>.
 
@@ -28,6 +29,9 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from typing import Literal
+from urllib.parse import urlparse
+from uuid import UUID
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
@@ -236,16 +240,24 @@ def duplicate_response(sb, dup: dict) -> dict:
             "name": dup["name"], "message": message}
 
 
-def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
-                         source_type: str) -> str:
-    """Returns the new recipe ID."""
+def source_label(url: str) -> str:
+    """Short name for where a link points ('Instagram', 'cooking.nytimes.com').
+    Used to tell apart two recipes that share a name."""
+    if INSTAGRAM_PATTERN.match(url):
+        return "Instagram"
+    return (urlparse(url).hostname or "link").removeprefix("www.")
+
+
+def recipe_row(recipe_data: dict, source_url: str, source_type: str,
+               name: str | None = None) -> dict:
+    """The recipes columns for a parsed recipe, queued at user-submitted priority."""
     # The planner filters on the "vegetarian" tag, so don't leave it to Claude
     # remembering to put it in tags: it answers the question explicitly.
     tags = recipe_data.get("tags") or []
     if recipe_data.get("vegetarian") is True and "vegetarian" not in tags:
         tags = [*tags, "vegetarian"]
-    row = {
-        "name": recipe_data["name"],
+    return {
+        "name": name or recipe_data["name"],
         "description": recipe_data.get("description", ""),
         "source_url": source_url,
         "source_type": source_type,
@@ -259,9 +271,15 @@ def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
         "in_queue": True,
         "queue_priority": 10,  # user-submitted = high priority
     }
+
+
+def save_recipe_to_queue(sb, recipe_data: dict, source_url: str,
+                         source_type: str, name: str | None = None) -> str:
+    """Returns the new recipe ID."""
+    row = recipe_row(recipe_data, source_url, source_type, name)
     res = sb.table("recipes").insert(row).execute()
     recipe_id = res.data[0]["id"]
-    logger.info("Added recipe '%s' to queue (id=%s)", recipe_data["name"], recipe_id)
+    logger.info("Added recipe '%s' to queue (id=%s)", row["name"], recipe_id)
     return recipe_id
 
 
@@ -299,12 +317,14 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
         sub_id = sub_res.data[0]["id"]
 
         def finish_duplicate(dup: dict) -> dict:
+            # Re-queue first: if that fails the submission shouldn't read as done.
+            result = duplicate_response(sb, dup)
             sb.table("recipe_submissions").update({
                 "status": "duplicate",
                 "recipe_id": dup["id"],
                 "processed_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", sub_id).execute()
-            return duplicate_response(sb, dup)
+            return result
 
         # Same link already known: stop before fetching or calling Claude.
         dup = find_duplicate(sb, url=url)
@@ -338,12 +358,49 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
                 detail="Couldn't parse a recipe from that link. Try a different link.",
             )
 
-        # Different link, same recipe: catch it by the name Claude extracted.
+        # Different link, same name as a recipe we have: a person decides what
+        # to do (replace it, keep both, or use the old one). Park the parsed
+        # recipe so their answer doesn't mean fetching and parsing it again.
         dup = find_duplicate(sb, url=url, name=recipe["name"])
-        if dup:
+        if dup and dup.get("matched_on") == "name":
+            try:
+                sb.table("recipe_submissions").update({
+                    "status": "needs_decision",
+                    "parsed_recipe": recipe,
+                    "recipe_id": dup["id"],
+                }).eq("id", sub_id).execute()
+            except Exception as exc:
+                # schema 6h not applied: nowhere to park it, so treat it as a
+                # plain duplicate rather than failing.
+                logger.warning("can't park recipe for a decision: %s "
+                               "(apply scripts/schema.sql 6h?)", exc)
+                return finish_duplicate(dup)
+            return {
+                "ok": True, "needs_decision": True, "submission_id": sub_id,
+                "existing": {
+                    "id": dup["id"], "name": dup["name"], "in_queue": dup["in_queue"],
+                    "source": source_label(dup["source_url"]) if dup.get("source_url") else None,
+                },
+                "incoming": {"name": recipe["name"], "label": source_label(url)},
+                "message": f'"{dup["name"]}" is already in your library.',
+            }
+        if dup:   # the same link, turning up after the check above
             return finish_duplicate(dup)
 
-        recipe_id = save_recipe_to_queue(sb, recipe, url, source_type)
+        try:
+            recipe_id = save_recipe_to_queue(sb, recipe, url, source_type)
+        except Exception as exc:
+            # Most likely the unique source_key index: the same link submitted
+            # twice at once. Report that as a duplicate; anything else failed.
+            dup = find_duplicate(sb, url=url)
+            if dup:
+                return finish_duplicate(dup)
+            sb.table("recipe_submissions").update({
+                "status": "failed",
+                "error_detail": f"Save failed: {exc}",
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", sub_id).execute()
+            raise HTTPException(status_code=500, detail="Couldn't save that recipe. Try again.")
 
         sb.table("recipe_submissions").update({
             "status": "added",
@@ -357,6 +414,62 @@ def ingest(req: IngestRequest, x_ingest_token: str | None = Header(default=None)
     # A name-only submission used to create a stub with no ingredients, which
     # nothing in the app could fill in. Links only.
     raise HTTPException(status_code=400, detail="Provide a recipe link as 'url'")
+
+
+class ResolveRequest(BaseModel):
+    submission_id: UUID
+    action: Literal["replace", "keep_both", "use_existing"]
+    label: str | None = Field(default=None, max_length=40)   # for keep_both
+
+
+@app.post("/ingest/resolve")
+def resolve(req: ResolveRequest, x_ingest_token: str | None = Header(default=None)):
+    """Finish a submission that stopped on a name clash (status needs_decision):
+      replace      overwrite the old recipe in place with the new one, and queue it
+      keep_both    add the new one as "Name (label)"
+      use_existing skip the new link and queue the old recipe instead
+    Replacing keeps the old row's id, so plans that use it keep working."""
+    require_token(x_ingest_token)
+    sb = get_sb()
+
+    def first(table: str, id_: str) -> dict | None:
+        rows = sb.table(table).select("*").eq("id", id_).limit(1).execute().data
+        return rows[0] if rows else None
+
+    sub = first("recipe_submissions", str(req.submission_id))
+    if not sub or sub["status"] != "needs_decision" or not sub.get("parsed_recipe"):
+        raise HTTPException(
+            status_code=409,
+            detail="That choice was already made or has expired. Paste the link again.")
+    existing = first("recipes", sub["recipe_id"])
+    if not existing:
+        raise HTTPException(status_code=409,
+                            detail="The recipe it matched is gone. Paste the link again.")
+
+    recipe, url = sub["parsed_recipe"], sub["parsed_url"]
+    source_type = "instagram" if INSTAGRAM_PATTERN.match(url) else "url"
+    status, recipe_id = "added", existing["id"]
+
+    if req.action == "use_existing":
+        result, status = duplicate_response(sb, existing), "duplicate"
+    elif req.action == "replace":
+        sb.table("recipes").update(recipe_row(recipe, url, source_type)) \
+            .eq("id", existing["id"]).execute()
+        result = {"ok": True, "recipe_id": recipe_id, "name": recipe["name"],
+                  "message": f'Replaced "{existing["name"]}" with the new recipe and queued it.'}
+    else:
+        name = f'{recipe["name"]} ({(req.label or "").strip() or source_label(url)})'
+        recipe_id = save_recipe_to_queue(sb, recipe, url, source_type, name=name)
+        result = {"ok": True, "recipe_id": recipe_id, "name": name,
+                  "message": f'Added "{name}" to the queue.'}
+
+    # Marked done only after the action worked, so a failure can be retried.
+    sb.table("recipe_submissions").update({
+        "status": status,
+        "recipe_id": recipe_id,
+        "processed_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", sub["id"]).execute()
+    return result
 
 
 class PlanSettings(BaseModel):
