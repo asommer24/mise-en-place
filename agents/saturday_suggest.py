@@ -103,8 +103,10 @@ def fetch_recipes(sb, settings: dict) -> dict:
             # "vegetarian" is a value in the tags[] array (there is no
             # vegetarian column), so filter with contains().
             q = q.contains("tags", ["vegetarian"])
-        # prefer less-used recipes
-        return q.order("times_suggested", desc=False).execute().data or []
+        rows = q.order("times_suggested", desc=False).execute().data or []   # prefer less-used
+        # No ingredients means nothing for the shopping list, so it can't be
+        # planned (a leftover name-only stub, say).
+        return [r for r in rows if r.get("ingredients")]
 
     lunches = pool("lunch", settings["vegetarian_lunches"])
     dinners = pool("dinner", settings["vegetarian_dinners"])

@@ -4,12 +4,12 @@ Picks make-ahead lunches + vegetarian dinners every Saturday, enough servings
 for the week, and shows them on a web app where either of you can swap recipes, then builds a categorized
 shopping list in Todoist Sunday morning.
 
-Add recipes by sending an Instagram link to the ingest endpoint — paste it in
-the web app, or share a post straight from Instagram with a one-tap iOS
-Shortcut. Each link is fetched and parsed into a structured recipe by Claude,
-then queued and prioritized for the next week's plan.
+Add recipes from the web app's Queue tab by pasting a recipe link. Each link is fetched and parsed into a structured recipe by Claude,
+then queued and prioritized for the next week's plan. Anything already in the
+library or queue isn't added twice.
 
 **More documentation lives in [`docs/`](docs/):**
+[Queue](docs/QUEUE.md) (adding, duplicates, removing),
 [Settings tab](docs/SETTINGS.md) (what the defaults control) and
 [Tagging](docs/TAGGING.md) (how meal type, tags and servings get decided).
 
@@ -18,8 +18,7 @@ then queued and prioritized for the next week's plan.
 ## Weekly Flow
 
 ```
-Anytime         →  Paste/share an Instagram link → recipe parsed → added to queue
-                →  Or type a recipe name        → stub added to queue
+Anytime         →  Paste an Instagram link in the Queue tab → recipe parsed → added to queue
 
 Saturday 9 AM   →  Claude picks lunches + vegetarian dinners from library + queue
                    to cover the week's servings (see below)
@@ -36,7 +35,7 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 > exposes posts an account *publishes*, and Basic Display was shut down in
 > Dec 2024. The only thing that can read Saved is an unofficial "log in as you"
 > client, which violates Instagram's TOS and risks the account. So recipes are
-> submitted per-post (one tap from the share sheet) instead.
+> submitted per-post (pasted into the Queue tab) instead.
 
 > **Vegetarian toggles.** Settings has one switch for lunches and one for
 > dinners (dinners on, lunches off by default). A switch limits that pool to
@@ -69,10 +68,14 @@ Sunday 1 AM     →  Claude consolidates all ingredients
 the `increment_times_suggested` function (previously called but never defined,
 so `times_suggested` never incremented) and 7b tops the library up to 6 lunches
 and 4 vegetarian dinners. Also run **6d** (the `meal_settings` defaults table and
-`weekly_plans.settings`) **6e** (the vegetarian switches) and **6f** (lets the web app edit a recipe's
-meal type, tags and servings). Without 6d/6e the app falls back to the defaults
-and the Settings tab can't save; without 6f the recipe **edit** button reports
-an error. All five are safely re-runnable. Do *not* re-run section 7
+`weekly_plans.settings`), **6e** (the vegetarian switches), **6f** (lets the web
+app edit a recipe's meal type, tags and servings and remove it from the queue)
+**6g** (duplicate detection) and **6h** (holds a recipe while you decide what to
+do about a name clash). Without 6d/6e the app falls back to the defaults and the
+Settings tab can't save; without 6f the recipe **edit** and queue **remove**
+buttons report an error; without 6g nothing stops a duplicate being added;
+without 6h a name clash is treated as a plain duplicate instead of asking you.
+All eight are safely re-runnable. Do *not* re-run section 7
 — it has no unique constraint to conflict on, so it duplicates its recipes.
 
 ### 2. Todoist
@@ -136,24 +139,18 @@ before the policy was added.
 
 ## Adding Recipes
 
-**From the web app:** open the **Queue** tab → paste an Instagram link or a
-recipe name → **Add**.
+Recipes are added from the web app: open the **Queue** tab → paste a recipe link
+(Instagram or any recipe page) → **Add**. That is the only way in, and it takes
+links only. A link that is already in the library or queue is not added again,
+and a new link whose recipe has the same name as one you have asks whether to
+replace the old one, keep both, or use the old one. A queued recipe can be taken off the queue with **remove**, and a
+library recipe can be put back with **add to queue** on its Library card. How
+duplicates are detected and what each case does is in
+[docs/QUEUE.md](docs/QUEUE.md).
 
-**From Instagram (one tap) — iOS Shortcut:**
-1. Open the **Shortcuts** app → create a new shortcut.
-2. Add **Get Contents of URL**:
-   - URL: `https://<your-ingest-service>/ingest`
-   - Method: `POST`
-   - Headers: `Content-Type: application/json`, `X-Ingest-Token: <your INGEST_TOKEN>`
-   - Request Body: `JSON` → key `url` = the Shortcut Input
-3. In the shortcut settings, enable **Show in Share Sheet** and accept URLs.
-4. Now in Instagram: tap **Share → Add to Mise** and the recipe is queued.
-
-A submitted **name** that already matches a library recipe is re-queued; an
-unknown name is added as a stub (default `meal_type: dinner`) for you to fill in
-on the web app. Use **edit** on a recipe card (Library or Queue) to change its
-meal type, servings and tags; vegetarian is a switch over the `vegetarian` tag.
-How each of those gets decided, and when, is in [docs/TAGGING.md](docs/TAGGING.md).
+Use **edit** on a recipe card (Library or Queue) to change its meal type,
+servings and tags; vegetarian is a switch over the `vegetarian` tag. How each of
+those gets decided, and when, is in [docs/TAGGING.md](docs/TAGGING.md).
 
 ### How Instagram link parsing works
 The ingest endpoint reads the post's **caption** (where the recipe text lives),
@@ -166,8 +163,8 @@ string on the link is stripped automatically. Plain `/embed/` is *not* used —
 it returns only page chrome (likes/handle) without the caption.
 
 If a caption is sparse or the embed is unavailable, set the optional
-`INSTAGRAM_SCRAPER_API_KEY` (RapidAPI) for richer parsing, or just submit the
-recipe **name** instead (`{"name": "..."}`), which skips fetching entirely.
+`INSTAGRAM_SCRAPER_API_KEY` (RapidAPI) for richer parsing, or try a different
+link to the same recipe.
 
 ---
 
@@ -256,6 +253,7 @@ mise-en-place/
 │   ├── sunday_shopping.py    # Sunday cron: shopping list to Todoist
 │   └── ingest.py             # FastAPI: POST /ingest adds recipes to the queue
 ├── docs/
+│   ├── QUEUE.md              # Adding, duplicate detection, removing
 │   ├── SETTINGS.md           # The Settings tab: what it controls and governs
 │   └── TAGGING.md            # How meal type, tags and servings get decided
 ├── test_agents.py            # Offline asserts: week math, JSON parsing, validation
