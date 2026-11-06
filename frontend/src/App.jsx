@@ -771,7 +771,7 @@ function GenerateModal({ initial, defaults, weekLabel, generating, status, onGen
                 borderRadius:"3px", background:"#c8a87a",
                 animation:"miseSlide 1.4s ease-in-out infinite" }} />
             </div>
-            <div style={{ fontSize:"14px", marginBottom:"22px" }}>
+            <div style={{ fontSize:"14px", color:"#f5ede0", marginBottom:"22px" }}>
               Choosing whole recipes that cover your servings. Usually 10 to 20 seconds.
             </div>
           </>
