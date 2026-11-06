@@ -92,9 +92,11 @@ The Sunday agent clears the project's open tasks, then writes one task per
 ingredient grouped under `── CATEGORY ──` header tasks (produce, protein,
 dairy, …). The same list is also saved to Supabase for the web app.
 
-### 3. Deploy the ingest endpoint (Railway — free tier)
+### 3. Deploy the ingest endpoint (Railway — about $5/month)
 The ingest handler runs as a persistent web service (GitHub Actions can't
-receive HTTP requests).
+receive HTTP requests). Railway costs about $5/month; if the service is paused
+(for example, over a billing or usage limit), adding links and generating plans
+from the web app stop working until it is resumed.
 
 ```bash
 npm install -g @railway/cli
@@ -234,10 +236,10 @@ trigger that maintains `updated_at`.
 |---|---|---|
 | Claude Sonnet API (2 crons/week + ingests) | ~$0.50 | ~$6 |
 | Supabase (free tier) | $0 | $0 |
-| Railway (free tier for ingest endpoint) | $0 | $0 |
+| Railway (ingest endpoint) | ~$5 | ~$60 |
 | Vercel (free tier) | $0 | $0 |
 | Todoist (free tier) | $0 | $0 |
-| **Total** | **~$0.50** | **~$6** |
+| **Total** | **~$5.50** | **~$66** |
 
 Optional: RapidAPI Instagram scraper ~$10/month if you want richer IG parsing.
 
