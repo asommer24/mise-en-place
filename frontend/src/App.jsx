@@ -75,6 +75,9 @@ function TagPill({ label, kind = "tag", on, onClick }) {
 function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, dayTag, compact = false, onTag, isOn, query }) {
   const totalMins = (recipe.prep_time_mins || 0) + (recipe.cook_time_mins || 0);
   const interactive = !!onTag;
+  const sourceLabel = recipe.source_url && (/instagram\.com/i.test(recipe.source_url)
+    ? "📸 IG"
+    : `🔗 ${(() => { try { return new URL(recipe.source_url).hostname.replace(/^www\./, ""); } catch { return "link"; } })()}`);
   return (
     <div style={{
       background: "rgba(255,252,245,0.06)",
@@ -90,16 +93,18 @@ function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, dayTag, compact
           border:"1px solid rgba(255,160,80,0.25)", padding:"2px 8px",
           borderRadius:"20px", letterSpacing:"0.08em" }}>QUEUED</div>
       )}
-      {recipe.source_url && (
+      {/* On plan cards (onSwap) the corner is the day tag's and the source label sits in the meta row */}
+      {dayTag && (
+        <span style={{ position:"absolute", top:12, right:12, fontSize:"11px", color:"#c8a87a",
+          background:"rgba(200,168,122,0.1)", border:"1px solid rgba(200,168,122,0.35)",
+          padding:"2px 10px", borderRadius:"20px", whiteSpace:"nowrap" }}>{dayTag}</span>
+      )}
+      {sourceLabel && !onSwap && (
         <div style={{ position:"absolute", top: recipe.in_queue ? 32 : 10, right:10,
-          fontSize:"10px", color:"#c8a87a" }}>
-          {/instagram\.com/i.test(recipe.source_url)
-            ? "📸 IG"
-            : `🔗 ${(() => { try { return new URL(recipe.source_url).hostname.replace(/^www\./, ""); } catch { return "link"; } })()}`}
-        </div>
+          fontSize:"10px", color:"#c8a87a" }}>{sourceLabel}</div>
       )}
 	{/* Suppressed when interactive: vegetarian shows as a pill in the tag row */}
-	{!interactive && (recipe.tags || []).includes("vegetarian") && (
+	{!interactive && !onSwap && (recipe.tags || []).includes("vegetarian") && (
           <div style={{ position:"absolute", top: recipe.in_queue ? 52 : 30, right:10,
             fontSize:"10px", color:"#7ac87a",
             background:"rgba(122,200,122,0.1)",
@@ -108,7 +113,7 @@ function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, dayTag, compact
         )}
       <div style={{ fontFamily:"'Playfair Display', Georgia, serif",
         fontSize: compact ? "14px" : "16px", fontWeight:"700",
-        color:"#f5ede0", marginBottom:"5px", paddingRight:"40px",
+        color:"#f5ede0", marginBottom:"5px", paddingRight: dayTag ? "84px" : "40px",
         lineHeight:"1.3", textWrap:"balance" }}>
         {query ? <Highlight text={recipe.name} query={query} /> : recipe.name}
       </div>
@@ -123,6 +128,14 @@ function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, dayTag, compact
         )}
         {recipe.servings && (
           <span style={{ fontSize:"11px", color:"#806040" }}>👥 {recipe.servings}</span>
+        )}
+        {onSwap && sourceLabel && (
+          <span style={{ fontSize:"11px", color:"#c8a87a" }}>{sourceLabel}</span>
+        )}
+        {onSwap && (recipe.tags || []).includes("vegetarian") && (
+          <span style={{ fontSize:"10px", color:"#7ac87a", background:"rgba(122,200,122,0.1)",
+            border:"1px solid rgba(122,200,122,0.2)", padding:"2px 6px",
+            borderRadius:"20px" }}>🌿 veg</span>
         )}
         {interactive ? (
           <>
@@ -143,11 +156,6 @@ function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, dayTag, compact
               {t}
             </span>
           ))
-        )}
-        {dayTag && (
-          <span style={{ fontSize:"11px", color:"#c8a87a", background:"rgba(200,168,122,0.1)",
-            border:"1px solid rgba(200,168,122,0.35)", padding:"2px 10px",
-            borderRadius:"20px" }}>{dayTag}</span>
         )}
         {onSwap && (
           <button onClick={() => onSwap(recipe)} style={{
