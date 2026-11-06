@@ -70,12 +70,14 @@ so `times_suggested` never incremented) and 7b tops the library up to 6 lunches
 and 4 vegetarian dinners. Also run **6d** (the `meal_settings` defaults table and
 `weekly_plans.settings`), **6e** (the vegetarian switches), **6f** (lets the web
 app edit a recipe's meal type, tags and servings and remove it from the queue)
-**6g** (duplicate detection) and **6h** (holds a recipe while you decide what to
-do about a name clash). Without 6d/6e the app falls back to the defaults and the
-Settings tab can't save; without 6f the recipe **edit** and queue **remove**
-buttons report an error; without 6g nothing stops a duplicate being added;
-without 6h a name clash is treated as a plain duplicate instead of asking you.
-All eight are safely re-runnable. Do *not* re-run section 7
+**6g** (duplicate detection), **6h** (holds a recipe while you decide what to
+do about a name clash) and **6i** (the Weekly plan's cook days). Without 6d/6e
+the app falls back to the defaults and the Settings tab can't save; without 6f
+the recipe **edit** and queue **remove** buttons report an error; without 6g
+nothing stops a duplicate being added; without 6h a name clash is treated as a
+plain duplicate instead of asking you; without 6i the Weekly plan view can't
+save a day.
+All nine are safely re-runnable. Do *not* re-run section 7
 — it has no unique constraint to conflict on, so it duplicates its recipes.
 
 ### 2. Todoist

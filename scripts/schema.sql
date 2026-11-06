@@ -408,6 +408,17 @@ ALTER TABLE recipe_submissions ADD COLUMN IF NOT EXISTS parsed_recipe JSONB;
 
 
 -- ---------------------------------------------------------------------------
+-- 6i. Weekly plan days: the recipe cooked for dinner on each weekday
+--     {"tue": "<recipe uuid>", "thu": "<recipe uuid>"}; keys are mon..fri and a
+--     missing key means nothing planned. Any lunch or dinner in the plan can go
+--     on a day. The web app writes it through the existing "Public update
+--     current plans" policy; the Saturday agent resets it to {} when it
+--     regenerates the plan. Re-runnable.
+-- ---------------------------------------------------------------------------
+ALTER TABLE weekly_plans ADD COLUMN IF NOT EXISTS cook_days JSONB NOT NULL DEFAULT '{}';
+
+
+-- ---------------------------------------------------------------------------
 -- 7. Seed a few starter recipes so the app isn't empty
 --
 --    NOTE: the ON CONFLICT DO NOTHING below is a no-op — there is no unique

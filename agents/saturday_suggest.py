@@ -247,23 +247,29 @@ def save_weekly_plan(sb, selection: dict, week_start: date,
         "status": "suggested",
         "notes": selection.get("reasoning", ""),
         "settings": settings,   # what this plan was generated for
+        "cook_days": {},        # new recipes, so the old weekday picks no longer apply
     }
 
     # Upsert on week_start
     def upsert():
         return (sb.table("weekly_plans")
                 .upsert(plan_data, on_conflict="week_start").execute())
-    try:
-        res = upsert()
-    except Exception as exc:
-        # The settings column comes from scripts/schema.sql 6d, applied by hand.
-        # A plan without it beats no plan; regenerate then reopens on defaults.
-        if "settings" not in str(exc):
-            raise
-        logger.warning("weekly_plans.settings missing, saving without it "
-                       "(apply scripts/schema.sql 6d?)")
-        del plan_data["settings"]
-        res = upsert()
+    while True:
+        try:
+            res = upsert()
+            break
+        except Exception as exc:
+            # These columns come from scripts/schema.sql 6d and 6i, applied by
+            # hand. A plan without them beats no plan; regenerate then reopens
+            # on defaults and without weekday picks.
+            missing = [c for c in ("settings", "cook_days")
+                       if c in plan_data and c in str(exc)]
+            if not missing:
+                raise
+            logger.warning("weekly_plans.%s missing, saving without it "
+                           "(apply scripts/schema.sql 6d/6i?)", ", ".join(missing))
+            for c in missing:
+                del plan_data[c]
     plan_id = res.data[0]["id"]
     logger.info("Saved weekly plan %s for week of %s", plan_id, week_start)
 

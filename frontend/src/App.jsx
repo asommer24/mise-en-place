@@ -19,6 +19,9 @@ function planMonday(today = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// Weekday slots of the Weekly plan view; the keys are those of weekly_plans.cook_days.
+const COOK_DAYS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"]];
+
 // ─── Components ────────────────────────────────────────────────────────────
 
 function EmptyState({ children }) {
@@ -69,7 +72,7 @@ function TagPill({ label, kind = "tag", on, onClick }) {
 
 // onTag/isOn turn the tag row into filter controls (Library tab). Without
 // them the card renders the old read-only two-tag summary.
-function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, compact = false, onTag, isOn, query }) {
+function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, dayTag, compact = false, onTag, isOn, query }) {
   const totalMins = (recipe.prep_time_mins || 0) + (recipe.cook_time_mins || 0);
   const interactive = !!onTag;
   return (
@@ -140,6 +143,11 @@ function RecipeCard({ recipe, onSwap, onEdit, onRemove, onQueue, compact = false
               {t}
             </span>
           ))
+        )}
+        {dayTag && (
+          <span style={{ fontSize:"11px", color:"#c8a87a", background:"rgba(200,168,122,0.1)",
+            border:"1px solid rgba(200,168,122,0.35)", padding:"2px 10px",
+            borderRadius:"20px" }}>{dayTag}</span>
         )}
         {onSwap && (
           <button onClick={() => onSwap(recipe)} style={{
@@ -442,11 +450,145 @@ function ShoppingTab({ items, setItems, planId, weekLabel }) {
   );
 }
 
+// Weekly plan: pick a recipe, then the weekday you'll cook it for dinner.
+// `days` is { mon: recipeId, ... }, already limited to recipes still in the plan.
+function WeeklyPlanView({ recipes, days, weekStart, onChange }) {
+  const [sel, setSel] = useState(null);   // { id, from }; from is a day key, or null when picked from the list
+  const byId = Object.fromEntries(recipes.map(r => [r.id, r]));
+  const cur = sel && byId[sel.id] ? sel : null;   // the plan can change under a selection
+  const placed = new Set(Object.values(days));
+  const left = recipes.filter(r => !placed.has(r.id));
+  const [y, m, d] = weekStart.split("-").map(Number);
+  const todayStr = new Date().toDateString();
+  const open = COOK_DAYS.filter(([k]) => !days[k]).length;
+
+  const pickRecipe = id => setSel(cur && !cur.from && cur.id === id ? null : { id, from: null });
+  const pickDay = k => {
+    if (!cur) { if (days[k]) setSel({ id: days[k], from: k }); return; }
+    setSel(null);
+    if (cur.from === k) return;
+    const next = { ...days, [k]: cur.id };
+    if (cur.from) { if (days[k]) next[cur.from] = days[k]; else delete next[cur.from]; }   // swap, or move
+    onChange(next);
+  };
+  const clearDay = k => {
+    const next = { ...days };
+    delete next[k];
+    if (cur?.from === k) setSel(null);
+    onChange(next);
+  };
+  const mins = r => (r.prep_time_mins || 0) + (r.cook_time_mins || 0);
+  const meta = r => [mins(r) > 0 && `${mins(r)} min`, r.meal_type].filter(Boolean).join(" · ");
+  const label = { display:"flex", justifyContent:"space-between", fontSize:"11px",
+    letterSpacing:"0.14em", textTransform:"uppercase", color:"#a08560", marginBottom:"8px" };
+  const font = "'Crimson Pro',Georgia,serif";
+
+  return (
+    <div style={{ marginBottom:"28px" }}>
+      <div role="status" aria-live="polite" style={{ fontSize:"13px", color:"#a08560",
+        minHeight:"20px", marginBottom:"12px" }}>
+        {!cur ? "Pick a recipe, then pick a day."
+          : cur.from ? `Moving ${byId[cur.id].name}. Pick another day, or the same day to cancel.`
+          : `Placing ${byId[cur.id].name}. Pick a day.`}
+      </div>
+
+      <div style={label}><span>Recipes to place</span><span>{left.length} left</span></div>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:"8px", marginBottom:"20px", minHeight:"44px" }}>
+        {left.length === 0 && (
+          <span style={{ fontSize:"14px", color:"#a08560", alignSelf:"center" }}>
+            Every recipe has a day.
+          </span>
+        )}
+        {left.map(r => {
+          const on = !!cur && !cur.from && cur.id === r.id;
+          return (
+            <button key={r.id} aria-pressed={on} onClick={() => pickRecipe(r.id)} style={{
+              textAlign:"left", padding:"8px 12px", borderRadius:"10px", cursor:"pointer",
+              fontFamily:font, color:"#f5ede0", lineHeight:1.25,
+              background: on ? "rgba(200,168,122,0.14)" : "rgba(255,252,245,0.06)",
+              border:`1px solid ${on ? "#c8a87a" : "rgba(200,180,140,0.2)"}`,
+            }}>
+              <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:"14px",
+                fontWeight:"700" }}>{r.name}</div>
+              <div style={{ fontSize:"12px", color:"#a08560" }}>{meta(r)}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={label}><span>Dinner each night</span></div>
+      <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+        {COOK_DAYS.map(([k, short], i) => {
+          const r = byId[days[k]];
+          const held = cur?.from === k;
+          const target = !!cur && !held;
+          const date = new Date(y, m - 1, d + i);
+          const isToday = date.toDateString() === todayStr;
+          const dateText = date.toLocaleDateString(undefined, { month:"short", day:"numeric" });
+          return (
+            <div key={k} style={{ display:"grid", gridTemplateColumns:"56px minmax(0,1fr) 40px", gap:"10px" }}>
+              <div style={{ paddingTop:"10px", lineHeight:1.2 }}>
+                <div style={{ fontSize:"16px", color:"#f5ede0" }}>{short}</div>
+                <div style={{ fontSize:"12px", color:"#a08560" }}>{dateText}</div>
+                {isToday && (
+                  <div style={{ fontSize:"10px", letterSpacing:"0.1em", textTransform:"uppercase",
+                    color:"#c8a87a" }}>Today</div>
+                )}
+              </div>
+              <button onClick={() => pickDay(k)}
+                aria-label={`${short} ${dateText}: ${r ? r.name : "nothing planned"}`}
+                aria-pressed={r ? held : undefined}
+                style={{
+                  textAlign:"left", minHeight:"58px", padding:"10px 14px", borderRadius:"12px",
+                  cursor:"pointer", fontFamily:font, lineHeight:1.3,
+                  color: r ? "#f5ede0" : target ? "#c8a87a" : "#a08560", fontSize:"14px",
+                  background: held ? "rgba(200,168,122,0.14)" : target ? "rgba(200,168,122,0.07)"
+                    : r ? "rgba(255,252,245,0.06)" : "transparent",
+                  border:`1px ${r && !target ? "solid" : "dashed"} ${held || target ? "#c8a87a" : "rgba(200,180,140,0.2)"}`,
+                  boxShadow: isToday ? "0 0 0 1px rgba(200,168,122,0.45)" : "none",
+                }}>
+                {r ? (
+                  <>
+                    <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:"15px",
+                      fontWeight:"700" }}>{r.name}</div>
+                    <div style={{ fontSize:"12px", color:"#a08560" }}>
+                      {meta(r)}{held ? " · moving" : ""}
+                    </div>
+                  </>
+                ) : (target ? "Place here" : "Nothing planned")}
+              </button>
+              <button onClick={() => clearDay(k)}
+                aria-label={r ? `Remove ${r.name} from ${short}` : undefined}
+                style={{
+                  visibility: r ? "visible" : "hidden", cursor:"pointer", fontSize:"18px",
+                  background:"none", color:"#a08560", borderRadius:"10px",
+                  border:"1px solid rgba(200,180,140,0.2)",
+                }}>×</button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline",
+        marginTop:"14px", fontSize:"14px", color:"#a08560" }}>
+        <span>{open} {open === 1 ? "day" : "days"} open</span>
+        <button disabled={open === COOK_DAYS.length}
+          onClick={() => { setSel(null); onChange({}); }}
+          style={{ background:"none", border:"none", padding:"4px 0", fontFamily:font,
+            fontSize:"14px", color:"#a08560", textDecoration:"underline",
+            textUnderlineOffset:"3px", cursor: open === COOK_DAYS.length ? "default" : "pointer",
+            opacity: open === COOK_DAYS.length ? 0.4 : 1 }}>Clear days</button>
+      </div>
+    </div>
+  );
+}
+
 function SwapModal({ recipe, allRecipes, onConfirm, onClose }) {
   const [selected, setSelected] = useState(null);
+  // Queued recipes first; sort is stable, so the rest keep their order.
   const options = allRecipes.filter(r =>
     r.meal_type === recipe.meal_type && r.id !== recipe.id
-  );
+  ).sort((a, b) => !!b.in_queue - !!a.in_queue);
   return (
     <div style={{
       position:"fixed", inset:0, background:"rgba(20,12,6,0.85)",
@@ -1047,6 +1189,7 @@ export default function MiseEnPlace() {
   const [shoppingItems, setShoppingItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [swapTarget, setSwapTarget] = useState(null);
+  const [weekView, setWeekView] = useState("meals");   // "meals" | "plan" (Weekly plan)
   const [saved, setSaved] = useState(false);
   const [queueInput, setQueueInput] = useState("");
   const [queueFeedback, setQueueFeedback] = useState("");
@@ -1151,9 +1294,30 @@ export default function MiseEnPlace() {
     // type must not make a swap write to the wrong list.
     const field = plan.lunches?.includes(original.id) ? "lunches" : "dinners";
     const nextIds = (plan[field] || []).map(id => id === original.id ? replacement.id : id);
-    setPlan(p => ({ ...p, [field]: nextIds }));   // optimistic
+    // The replacement takes over the original's cook day, unless it already has one.
+    const days = plan.cook_days || {};
+    const dayKey = Object.keys(days).find(k => days[k] === original.id);
+    const nextDays = { ...days };
+    if (dayKey) {
+      if (Object.values(days).includes(replacement.id)) delete nextDays[dayKey];
+      else nextDays[dayKey] = replacement.id;
+    }
+    // cook_days only goes in the update when it changed, so a swap still works
+    // before schema.sql 6i is applied.
+    const patch = dayKey ? { [field]: nextIds, cook_days: nextDays } : { [field]: nextIds };
+    setPlan(p => ({ ...p, ...patch }));   // optimistic
     setSwapTarget(null);
-    await supabase.from("weekly_plans").update({ [field]: nextIds }).eq("id", plan.id);
+    await supabase.from("weekly_plans").update(patch).eq("id", plan.id);
+  };
+
+  const saveCookDays = async next => {
+    const prev = plan.cook_days || {};
+    setPlan(p => ({ ...p, cook_days: next }));   // optimistic
+    const { error } = await supabase.from("weekly_plans").update({ cook_days: next }).eq("id", plan.id);
+    if (error) {
+      setPlan(p => ({ ...p, cook_days: prev }));
+      window.alert(`Couldn't save the weekly plan: ${error.message} (apply scripts/schema.sql 6i?)`);
+    }
   };
 
   const handleSave = async () => {
@@ -1169,7 +1333,8 @@ export default function MiseEnPlace() {
   // week's plan but not DELETE, and Generate upserts the same row back to life.
   const handleClear = async () => {
     if (!plan || !window.confirm("Clear this week's plan and shopping list?")) return;
-    const cleared = { lunches: [], dinners: [], shopping_list: [], status: "suggested", confirmed_at: null, notes: null };
+    const cleared = { lunches: [], dinners: [], shopping_list: [], status: "suggested", confirmed_at: null, notes: null,
+      ...(plan.cook_days ? { cook_days: {} } : {}) };   // no cook_days column before 6i
     setPlan(p => ({ ...p, ...cleared }));
     setShoppingItems([]);
     await supabase.from("weekly_plans").update(cleared).eq("id", plan.id);
@@ -1271,6 +1436,12 @@ export default function MiseEnPlace() {
       : `${need} servings needed · ${planned} planned · ${need - planned} short`;
   const weekOf = formatWeek(weekStart, { month: "long", day: "numeric", year: "numeric" });
   const weekLabel = `Week of ${formatWeek(weekStart, { month: "short", day: "numeric" })}`;
+  // Cook days that still point at a recipe in the plan, and the reverse lookup for the tags.
+  const planIds = new Set([...(plan?.lunches || []), ...(plan?.dinners || [])]);
+  const cookDays = Object.fromEntries(
+    Object.entries(plan?.cook_days || {}).filter(([, id]) => planIds.has(id)));
+  const dayOfRecipe = Object.fromEntries(
+    COOK_DAYS.filter(([k]) => cookDays[k]).map(([k, short]) => [cookDays[k], short]));
 
   return (
     <>
@@ -1378,6 +1549,24 @@ export default function MiseEnPlace() {
               <div style={{ fontSize:"14px", color:"#a08560", marginBottom:"20px" }}>
                 {planSummary}
               </div>
+              <div role="tablist" aria-label="This week views" style={{ display:"inline-flex",
+                border:"1px solid rgba(200,168,122,0.35)", borderRadius:"10px", padding:"3px",
+                gap:"2px", marginBottom:"20px" }}>
+                {[["meals", "Meals"], ["plan", "Weekly plan"]].map(([v, text]) => (
+                  <button key={v} role="tab" aria-selected={weekView === v}
+                    onClick={() => setWeekView(v)} style={{
+                      border:"none", padding:"6px 16px", borderRadius:"7px", fontSize:"14px",
+                      fontFamily:"'Crimson Pro',Georgia,serif", cursor:"pointer",
+                      background: weekView === v ? "#c8a87a" : "transparent",
+                      color: weekView === v ? "#120d07" : "#a08560",
+                      fontWeight: weekView === v ? "600" : "400",
+                    }}>{text}</button>
+                ))}
+              </div>
+              {weekView === "plan" ? (
+                <WeeklyPlanView recipes={[...dinners, ...lunches]} days={cookDays}
+                  weekStart={weekStart} onChange={saveCookDays} />
+              ) : (<>
               <div style={{ marginBottom:"28px" }}>
                 <div style={{ display:"flex", justifyContent:"space-between",
                   alignItems:"center", marginBottom:"14px" }}>
@@ -1391,7 +1580,8 @@ export default function MiseEnPlace() {
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
                   {lunches.map(r => (
-                    <RecipeCard key={r.id} recipe={r} onSwap={() => setSwapTarget(r)} />
+                    <RecipeCard key={r.id} recipe={r} onSwap={() => setSwapTarget(r)}
+                      dayTag={dayOfRecipe[r.id] && `${dayOfRecipe[r.id]} dinner`} />
                   ))}
                 </div>
               </div>
@@ -1409,10 +1599,12 @@ export default function MiseEnPlace() {
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
                   {dinners.map(r => (
-                    <RecipeCard key={r.id} recipe={r} onSwap={() => setSwapTarget(r)} />
+                    <RecipeCard key={r.id} recipe={r} onSwap={() => setSwapTarget(r)}
+                      dayTag={dayOfRecipe[r.id]} />
                   ))}
                 </div>
               </div>
+              </>)}
 
               <div style={{ display:"flex", gap:"10px", paddingBottom:"32px" }}>
                 <button onClick={handleSave} style={{

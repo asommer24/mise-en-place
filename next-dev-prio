@@ -4,3 +4,4 @@
 4. Add support for tracking wish list of restaurants
 5. Add "cooked" to the DB so we can track / review recipes. 
 6. Add a button to the shopping tab to allow shopping list generation
+7. Add a "Weekly plan" sub-view under "This week" to assign a lunch or dinner recipe to each night Mon-Fri (spec and prototype done, open questions answered)

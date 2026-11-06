@@ -455,6 +455,53 @@ def test_week_label_is_portable():
     assert f"{date(2026, 8, 7):%b} {date(2026, 8, 7).day}" == "Aug 7"
 
 
+def test_regenerate_resets_cook_days():
+    """A new plan clears the weekday picks, and still saves before SQL 6i is applied."""
+    from agents.saturday_suggest import save_weekly_plan
+
+    class SB:
+        def __init__(self, missing=()):
+            self.missing, self.sent = missing, []
+
+        def table(self, name):
+            sb, q = self, SimpleNamespace(data=[{"id": "p1"}], kind="other")
+
+            def upsert(data, on_conflict=None):
+                sb.sent.append(dict(data))
+                q.kind = "upsert"
+                return q
+
+            def chain(*a, **k):
+                q.kind = "other"
+                return q
+
+            def execute():
+                if q.kind == "upsert":
+                    for c in sb.missing:
+                        if c in sb.sent[-1]:
+                            raise Exception(f"Could not find the '{c}' column of 'weekly_plans'")
+                return q
+
+            q.upsert, q.update, q.in_, q.execute = upsert, chain, chain, execute
+            return q
+
+        def rpc(self, *a, **k):
+            return SimpleNamespace(execute=lambda: None)
+
+    sel = {"lunch_ids": ["a"], "dinner_ids": ["b"]}
+    sb = SB()
+    save_weekly_plan(sb, sel, date(2026, 11, 2), {})
+    assert sb.sent[0]["cook_days"] == {}
+
+    sb = SB(missing=("cook_days",))   # 6i not applied yet
+    save_weekly_plan(sb, sel, date(2026, 11, 2), {})
+    assert len(sb.sent) == 2 and "cook_days" not in sb.sent[1]
+
+    sb = SB(missing=("cook_days", "settings"))   # neither applied
+    save_weekly_plan(sb, sel, date(2026, 11, 2), {})
+    assert "cook_days" not in sb.sent[-1] and "settings" not in sb.sent[-1]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
