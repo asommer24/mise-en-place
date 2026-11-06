@@ -18,8 +18,7 @@ other, never both.
 
 | Source | `meal_type` | `tags` | `servings` |
 |---|---|---|---|
-| **Instagram / URL link** (Queue tab or iOS Shortcut) | Claude decides | Claude decides, plus `vegetarian` from its explicit answer | Claude's reading of the recipe |
-| **Recipe name only** (Queue tab) | Always `dinner` | None | Database default of 4 |
+| **Instagram / URL link** (Queue tab) | Claude decides | Claude decides, plus `vegetarian` from its explicit answer | Claude's reading of the recipe |
 | **Seed recipes** (`scripts/schema.sql`) | Set by hand | Set by hand | Set by hand |
 | **Edit button** (Library or Queue card) | You choose | You edit | You edit |
 
@@ -49,12 +48,12 @@ result before it is saved.
 - Nothing is enforced about them. They are for searching and filtering, and for
   giving the planner some context about variety.
 
-### Name-only entries
+### Recipes with no ingredients
 
-Typing a name that matches an existing recipe re-queues that recipe. An unknown
-name creates a **stub**: `meal_type = dinner`, no tags, no ingredients, and the
-default 4 servings. A stub can't be a lunch or count as vegetarian until you
-fix it with the edit button.
+Recipes can no longer be added by name only; the Queue takes links only (see
+[QUEUE.md](QUEUE.md)). Name-only recipes added earlier have `meal_type = dinner`,
+no tags and no ingredients. The edit dialog can fix the first two, but nothing in
+the app adds ingredients, so the planner never picks a recipe with none.
 
 ### Recipes ingested before the vegetarian question existed
 
@@ -79,6 +78,8 @@ The planner's filter matches the exact string `vegetarian`. `veg`, `vegan` and
 
 - **Pools.** Lunches come from `meal_type = 'lunch'`, dinners from
   `meal_type = 'dinner'`. Swapping a recipe offers only the same `meal_type`.
+- **No ingredients, no plan.** A recipe with an empty ingredient list is left
+  out of both pools, since it would add nothing to the shopping list.
 - **Vegetarian switches** (Settings tab, see [SETTINGS.md](SETTINGS.md)). Each meal type has its own switch. When
   one is on, that pool is limited to recipes tagged `vegetarian`. Defaults:
   dinners on, lunches off.
@@ -136,7 +137,6 @@ FROM recipes GROUP BY meal_type;
 |---|---|
 | Ingest prompt (`meal_type` and `vegetarian` rules) | `agents/ingest.py`, `RECIPE_EXTRACT_PROMPT` |
 | Adding the `vegetarian` tag | `agents/ingest.py`, `save_recipe_to_queue` |
-| Name-only stub | `agents/ingest.py`, the `stub` dict |
 | Pools, vegetarian filter, servings | `agents/saturday_suggest.py`, `fetch_recipes` and `servings` |
 | Tag normalisation | `scripts/schema.sql`, section 6c |
 | Edit permissions and limits | `scripts/schema.sql`, section 6f |
